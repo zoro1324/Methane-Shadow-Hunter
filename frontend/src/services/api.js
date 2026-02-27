@@ -70,6 +70,19 @@ export const facilitiesService = {
     const res = await apiClient.get('/facilities/nearby/', { params: { lat, lon, radius } })
     return res.data
   },
+  /** Search facilities by name / operator (uses DRF SearchFilter) */
+  search: async (query) => {
+    const res = await apiClient.get('/facilities/', { params: { search: query, page_size: 50 } })
+    return unwrap(res)
+  },
+}
+
+// ─── Heatmap Fallback (DB-sourced, when GEE is unavailable) ──────────────
+export const heatmapFallbackService = {
+  getPoints: async () => {
+    const res = await apiClient.get('/heatmap/fallback/')
+    return res.data
+  },
 }
 
 // ─── Hotspots (Sentinel-5P) ──────────────────────────────────────────────
@@ -150,9 +163,30 @@ export const pipelineService = {
     const res = await apiClient.get('/pipeline-runs/', { params })
     return unwrap(res)
   },
-  trigger: async (mode = 'demo') => {
-    const res = await apiClient.post('/pipeline/trigger/', { mode })
+  trigger: async (mode = 'demo', use_llm = true) => {
+    // Returns 202 immediately with { run_id, status: 'running' }
+    const res = await apiClient.post('/pipeline/trigger/', { mode, use_llm })
     return res.data
+  },
+  pollRun: async (runId, { onProgress, intervalMs = 3000, timeoutMs = 600000 } = {}) => {
+    // Poll GET /api/pipeline-runs/{id}/ until status is completed or failed
+    return new Promise((resolve, reject) => {
+      const deadline = Date.now() + timeoutMs
+      const tick = async () => {
+        try {
+          const res = await apiClient.get(`/pipeline-runs/${runId}/`)
+          const run = res.data
+          if (onProgress) onProgress(run)
+          if (run.status === 'completed') return resolve(run)
+          if (run.status === 'failed')    return reject(new Error(run.error_message || 'Pipeline failed'))
+          if (Date.now() > deadline)      return reject(new Error('Pipeline timed out'))
+          setTimeout(tick, intervalMs)
+        } catch (err) {
+          reject(err)
+        }
+      }
+      setTimeout(tick, intervalMs)
+    })
   },
   getRunResults: async (id) => {
     const res = await apiClient.get(`/pipeline-runs/${id}/results/`)
@@ -176,7 +210,7 @@ export const geojsonService = {
   },
 }
 
-// ─── Google Earth Engine (heatmap) ───────────────────────────────────────
+// ─── Google Earth Engine ─────────────────────────────────────────────────
 export const geeService = {
   /** Get GEE tile URL for Sentinel-5P CH4 overlay */
   getCH4Tiles: async (days = 30) => {
@@ -187,8 +221,66 @@ export const geeService = {
   getCH4Heatmap: async (days = 30, numPoints = 1000, scale = 20000) => {
     const res = await apiClient.get('/gee/ch4-heatmap/', {
       params: { days, num_points: numPoints, scale },
+      timeout: 12000,   // fail fast – DB fallback fires in parallel
     })
     return res.data
+  },
+  /**
+   * Detect CH4 anomaly hotspots from Sentinel-5P TROPOMI for a date range.
+   * @param {string} startDate  YYYY-MM-DD
+   * @param {string} endDate    YYYY-MM-DD
+   * @param {number} numPoints  Max sample points (default 1000)
+   * @param {number} scale      Sampling resolution in metres (default 20000)
+   * @returns {{ hotspots, stats, tile_url, start_date, end_date }}
+   */
+  getHotspots: async (startDate, endDate, numPoints = 1000, scale = 20000) => {
+    const res = await apiClient.get('/gee/ch4-hotspots/', {
+      params: { start_date: startDate, end_date: endDate, num_points: numPoints, scale },
+      timeout: 120_000,  // GEE calls can take up to ~60 s
+    })
+    return res.data
+  },
+  /**
+   * Company-centric CH4 analysis. Pass facility_id OR lat/lng,
+   * plus radiusKm, startDate, endDate.
+   */
+  getCompanyAnalysis: async ({ facilityId, lat, lng, radiusKm = 50, startDate, endDate, numPoints = 1000, scale = 10000 } = {}) => {
+    const params = { radius_km: radiusKm, start_date: startDate, end_date: endDate, num_points: numPoints, scale }
+    if (facilityId) params.facility_id = facilityId
+    if (lat != null) params.lat = lat
+    if (lng != null) params.lng = lng
+    const res = await apiClient.get('/gee/company-analysis/', { params, timeout: 180_000 })
+    return res.data
+  },
+}
+
+// ─── Authentication ──────────────────────────────────────────────────────
+export const authService = {
+  register: async ({ username, email, password, confirm_password, first_name, last_name }) => {
+    const res = await apiClient.post('/auth/register/', {
+      username, email, password, confirm_password, first_name, last_name,
+    })
+    return res.data
+  },
+  login: async ({ username, password }) => {
+    const res = await apiClient.post('/auth/login/', { username, password })
+    return res.data
+  },
+  /** Save token + user info to localStorage */
+  saveAuth: (data) => {
+    localStorage.setItem('authToken', data.token)
+    localStorage.setItem('authUser', JSON.stringify(data.user))
+  },
+  /** Clear session */
+  logout: () => {
+    localStorage.removeItem('authToken')
+    localStorage.removeItem('authUser')
+  },
+  /** Check if user is logged in */
+  isAuthenticated: () => !!localStorage.getItem('authToken'),
+  /** Get stored user */
+  getUser: () => {
+    try { return JSON.parse(localStorage.getItem('authUser')) } catch { return null }
   },
 }
 
