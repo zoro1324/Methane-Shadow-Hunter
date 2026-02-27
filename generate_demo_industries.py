@@ -1,4 +1,5 @@
 import sys
+import argparse
 from pathlib import Path
 import pandas as pd
 import numpy as np
@@ -11,9 +12,21 @@ from src.fusion.hotspot_detector import HotspotDetector
 from src.config import config
 
 def main():
-    print("Fetching active hotspots from GEE...")
+    parser = argparse.ArgumentParser(description="Generate demo_industries.csv")
+    parser.add_argument(
+        "--offline", action="store_true", default=False,
+        help="Use bundled India_Methane_Hotspots.csv instead of live GEE (default when --offline not set: live GEE)"
+    )
+    args = parser.parse_args()
+
     client = Sentinel5PClient()
-    df = client.fetch_hotspots_gee(bbox=config.aoi_bbox, days=30)
+
+    if args.offline:
+        print("Loading hotspots from bundled CSV (offline mode)...")
+        df = client.load_hotspots_csv()
+    else:
+        print("Fetching active hotspots from GEE...")
+        df = client.fetch_hotspots_gee(bbox=config.aoi_bbox, days=30)
     
     detector = HotspotDetector(threshold_sigma=config.hotspot_threshold_sigma)
     detected = detector.detect(df)

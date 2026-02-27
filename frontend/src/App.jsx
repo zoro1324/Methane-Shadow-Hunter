@@ -1,5 +1,7 @@
 import { Routes, Route } from 'react-router-dom'
 import Landing from './pages/Landing'
+import Login from './pages/Login'
+import Signup from './pages/Signup'
 import Dashboard from './pages/Dashboard'
 import LiveMap from './pages/LiveMap'
 import SuperEmitters from './pages/SuperEmitters'
@@ -16,6 +18,8 @@ function App() {
     <Routes>
       {/* Public Routes */}
       <Route path="/" element={<Landing />} />
+      <Route path="/login" element={<Login />} />
+      <Route path="/signup" element={<Signup />} />
       
       {/* Dashboard Routes - wrapped with DashboardLayout */}
       <Route path="/dashboard" element={<DashboardLayout />}>

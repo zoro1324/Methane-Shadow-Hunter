@@ -1,8 +1,8 @@
 """
 Autonomous Compliance Audit Reporting Agent.
 
-Uses LangChain + Ollama to generate formal compliance audit reports
-for identified methane-emitting facilities.
+Uses LangChain + Featherless AI (OpenAI-compatible) to generate formal
+compliance audit reports for identified methane-emitting facilities.
 """
 
 import json
@@ -31,34 +31,47 @@ class AuditReport:
 class ComplianceAuditAgent:
     """
     LLM-based agent that generates compliance audit reports.
-    
-    Uses LangChain with Ollama for analysis and report generation.
-    Falls back to template-based reports if LLM is unavailable.
+
+    Uses LangChain with Featherless AI (OpenAI-compatible API) for analysis
+    and report generation.  Falls back to template-based reports if the LLM
+    is unavailable.
     """
 
-    def __init__(self, model: str = "llama3:8b", base_url: str = "http://localhost:11434"):
+    def __init__(
+        self,
+        model: str = "meta-llama/Llama-3.1-8B-Instruct",
+        api_key: str = "",
+        base_url: str = "https://api.featherless.ai/v1",
+    ):
         self.model = model
+        self.api_key = api_key
         self.base_url = base_url
         self._llm = None
 
     def _init_llm(self):
-        """Initialize the Ollama LLM via LangChain."""
+        """Initialize the Featherless AI LLM via LangChain (OpenAI-compatible)."""
         if self._llm is not None:
             return True
 
+        if not self.api_key:
+            print("[Agent] FEATHERLESS_API_KEY not set — skipping LLM init.")
+            print("[Agent] Will use template-based reports instead.")
+            return False
+
         try:
-            from langchain_ollama import OllamaLLM
-            self._llm = OllamaLLM(
+            from langchain_openai import ChatOpenAI
+            self._llm = ChatOpenAI(
                 model=self.model,
-                base_url=self.base_url,
+                openai_api_key=self.api_key,
+                openai_api_base=self.base_url,
                 temperature=0.3,
             )
-            # Quick test
+            # Quick connectivity test
             self._llm.invoke("test")
-            print(f"[Agent] Connected to Ollama ({self.model})")
+            print(f"[Agent] Connected to Featherless AI ({self.model})")
             return True
         except Exception as e:
-            print(f"[Agent] Ollama not available: {e}")
+            print(f"[Agent] Featherless AI not available: {e}")
             print("[Agent] Will use template-based reports instead.")
             self._llm = None
             return False
@@ -168,7 +181,8 @@ Based on the following satellite detection data, provide:
 Provide your analysis in a structured format."""
 
             response = self._llm.invoke(prompt)
-            return response
+            # ChatOpenAI returns an AIMessage; extract text content
+            return response.content if hasattr(response, "content") else str(response)
         except Exception as e:
             print(f"[Agent] LLM analysis failed: {e}")
             return None

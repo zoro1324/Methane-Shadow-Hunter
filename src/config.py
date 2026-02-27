@@ -8,9 +8,9 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
-# Load .env from project root
+# Load .env from src directory
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(PROJECT_ROOT / ".env")
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 DATASET_DIR = PROJECT_ROOT / "models" / "dataset"
 
@@ -26,10 +26,10 @@ class Config:
     carbonmapper_token: str = ""
     carbonmapper_stac_url: str = "https://api.carbonmapper.org/api/v1/stac/"
 
-    # --- LLM ---
-    llm_provider: str = "ollama"
-    ollama_model: str = "llama3.2"
-    ollama_base_url: str = "http://localhost:11434"
+    # --- LLM (Featherless AI - OpenAI-compatible) ---
+    featherless_api_key: str = ""
+    featherless_model: str = "meta-llama/Llama-3.1-8B-Instruct"
+    featherless_base_url: str = "https://api.featherless.ai/v1"
 
     # --- AOI (India default) ---
     aoi_min_lon: float = 68.0
@@ -54,9 +54,9 @@ class Config:
                 "CARBONMAPPER_STAC_URL",
                 "https://api.carbonmapper.org/api/v1/stac/",
             ),
-            llm_provider=os.getenv("LLM_PROVIDER", "ollama"),
-            ollama_model=os.getenv("OLLAMA_MODEL", "llama3.2"),
-            ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+            featherless_api_key=os.getenv("FEATHERLESS_API_KEY", ""),
+            featherless_model=os.getenv("FEATHERLESS_MODEL", "meta-llama/Llama-3.1-8B-Instruct"),
+            featherless_base_url=os.getenv("FEATHERLESS_BASE_URL", "https://api.featherless.ai/v1"),
             aoi_min_lon=float(os.getenv("AOI_MIN_LON", "68.0")),
             aoi_max_lon=float(os.getenv("AOI_MAX_LON", "97.5")),
             aoi_min_lat=float(os.getenv("AOI_MIN_LAT", "6.5")),

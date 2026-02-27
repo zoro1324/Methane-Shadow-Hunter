@@ -28,7 +28,11 @@ from rest_framework import viewsets, status, filters
 from rest_framework.decorators import api_view, action
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.authtoken.models import Token
+from rest_framework.permissions import AllowAny
 
+from django.contrib.auth import authenticate
+from django.contrib.auth.models import User
 from django_filters.rest_framework import DjangoFilterBackend
 
 from .models import (
@@ -57,6 +61,8 @@ from .serializers import (
     PipelineRunSerializer,
     PipelineRunDetailSerializer,
     PipelineTriggerSerializer,
+    RegisterSerializer,
+    LoginSerializer,
 )
 
 
@@ -344,135 +350,456 @@ class PipelineTriggerView(APIView):
     """
     POST /api/pipeline/trigger/
 
-    Runs the methane detection pipeline and stores all results in the DB.
+    Spawns the pipeline in a background thread and returns 202 immediately
+    with the run ID. Poll GET /api/pipeline-runs/{id}/ to track progress.
     """
 
     def post(self, request):
+        import threading
+
         serializer = PipelineTriggerSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
         mode = serializer.validated_data.get('mode', 'demo')
         use_llm = serializer.validated_data.get('use_llm', False)
 
-        # Create pipeline run record
+        # Create pipeline run record immediately
         run = PipelineRun.objects.create(
             mode=mode,
             use_llm=use_llm,
             status='running',
         )
 
-        try:
-            # Add project root to sys.path for src imports
-            project_root = str(settings.PROJECT_ROOT)
-            if project_root not in sys.path:
-                sys.path.insert(0, project_root)
+        # Run pipeline in background thread so the HTTP request returns fast
+        thread = threading.Thread(
+            target=_run_pipeline_background,
+            args=(run.pk, mode, use_llm),
+            daemon=True,
+        )
+        thread.start()
 
-            from src.config import config
-            from src.data.sentinel5p import Sentinel5PClient
-            from src.data.carbonmapper import CarbonMapperClient
-            from src.data.infrastructure import InfrastructureDB
-            from src.fusion.hotspot_detector import HotspotDetector
-            from src.fusion.tasking_simulator import TaskingSimulator
-            from src.fusion.spatial_join import SpatialJoiner
-            from src.plume.gaussian_plume import GaussianPlumeModel
-            from src.plume.inversion import PlumeInverter
-            from src.plume.wind import WindField
+        return Response(
+            {'run_id': run.pk, 'status': 'running', 'message': 'Pipeline started. Poll /api/pipeline-runs/{run_id}/ for status.'},
+            status=status.HTTP_202_ACCEPTED,
+        )
 
-            use_demo = (mode == 'demo')
 
-            # Step 1: Load Sentinel-5P data
-            s5p = Sentinel5PClient()
-            if use_demo:
-                hotspots_df = s5p.load_hotspots_csv()
-            else:
-                hotspots_df = s5p.fetch_hotspots_gee(bbox=config.aoi_bbox, days=30)
+# ─── Terminal colour helpers (used by background pipeline logger) ─────────────
+class _C:
+    RESET   = "\033[0m";  BOLD    = "\033[1m";  DIM     = "\033[2m"
+    GREEN   = "\033[92m"; YELLOW  = "\033[93m"; RED     = "\033[91m"
+    CYAN    = "\033[96m"; MAGENTA = "\033[95m"; BLUE    = "\033[94m"
+    WHITE   = "\033[97m"
 
-            stats = s5p.get_summary_stats() if use_demo else s5p.get_summary_stats_from_df(hotspots_df)
-            run.total_hotspots = stats['total_hotspots']
+def _pc(text, colour):   return f"{colour}{text}{_C.RESET}"
+def _ok(t):   return _pc(f"  ✔  {t}", _C.GREEN)
+def _inf(t):  return _pc(f"  ·  {t}", _C.CYAN)
+def _warn(t): return _pc(f"  ⚠  {t}", _C.YELLOW)
+def _dat(t):  return f"     {_C.DIM}{t}{_C.RESET}"
 
-            # Store raw hotspots in DB
-            _store_raw_hotspots(hotspots_df)
+_STEP_META = {
+    1: ("🌍", "Fast Global Sweep",        "Sentinel-5P TROPOMI — 30-day CH4 mosaic over India AOI"),
+    2: ("🔍", "Anomaly Detection",         "Statistical σ-threshold → isolate genuine super-emitters"),
+    3: ("📡", "High-Res Tasking Trigger",  "Simulating CarbonMapper Tanager / GHGSat acquisition requests"),
+    4: ("🛰️ ", "High-Res Plume Imaging",   "CarbonMapper STAC API — exact plume geometry & emission rates"),
+    5: ("🏭", "Infrastructure Attribution","Haversine spatial join → attribute each plume to a facility"),
+    6: ("⚛️ ", "Plume Inversion (PyTorch)","Gaussian dispersion inversion with wind data → kg/hr"),
+    7: ("📋", "Autonomous Audit Reports",  "LangChain + Ollama compliance officer generates regulatory filings"),
+}
 
-            # Step 2: Detect anomalies
-            detector = HotspotDetector(threshold_sigma=config.hotspot_threshold_sigma)
-            detected = detector.detect(hotspots_df)
-            candidates = detector.get_tasking_candidates(detected)
-            run.detected_hotspots_count = len(candidates)
+def _step_hdr(n, run_pk):
+    import time
+    icon, short, desc = _STEP_META[n]
+    W = 70
+    print(_pc("═" * W, _C.BLUE))
+    print(_pc(f"  [Run #{run_pk}]  STEP {n}/7  {icon}  {short}", _C.BOLD + _C.WHITE))
+    print(_pc(f"  {desc}", _C.DIM + _C.CYAN))
+    print(_pc("═" * W, _C.BLUE))
+    return time.time()
 
-            # Store detected hotspots
-            _store_detected_hotspots(detected, run)
+def _step_done(t0, label=""):
+    import time
+    elapsed = time.time() - t0
+    tag = f" — {label}" if label else ""
+    print(_pc(f"\n  ✔  Done{tag}  [{elapsed:.2f}s]\n", _C.GREEN))
 
-            # Step 3: Simulate tasking
-            tasking = TaskingSimulator()
-            requests = tasking.create_tasking_requests(candidates, max_requests=15)
-            _store_tasking_requests(requests, run)
+def _hdiv(c="─", w=66): print(f"  {_C.DIM}{c*w}{_C.RESET}")
 
-            # Step 4: Generate plumes
-            cm = CarbonMapperClient()
-            hotspot_coords = [(h.latitude, h.longitude) for h in candidates]
-            if use_demo:
+
+def _run_pipeline_background(run_pk, mode, use_llm):
+    """Execute the full pipeline in a background thread with rich terminal output."""
+    import time
+    import numpy as np
+    from django.utils import timezone as tz
+
+    run = PipelineRun.objects.get(pk=run_pk)
+    pipeline_start = time.time()
+    W = 70
+
+    # ── Master header ────────────────────────────────────────────────────
+    print()
+    print(_pc("█" * W, _C.CYAN))
+    print(_pc("█" + " " * (W-2) + "█", _C.CYAN))
+    title = f"🛰️   METHANE SHADOW HUNTER  —  API-TRIGGERED RUN  #{run_pk}"
+    pad = max(0, (W - 2 - len(title)) // 2)
+    print(_pc("█" + " "*pad + title + " "*(W-2-pad-len(title)) + "█", _C.BOLD + _C.CYAN))
+    print(_pc("█" + " " * (W-2) + "█", _C.CYAN))
+    print(_pc("█" * W, _C.CYAN))
+    mode_s = _pc("OFFLINE (bundled CSV)", _C.YELLOW) if mode == "demo" else _pc("LIVE (GEE + APIs)", _C.GREEN)
+    llm_s  = _pc("Enabled", _C.GREEN) if use_llm else _pc("Disabled", _C.YELLOW)
+    print(f"\n  {_C.BOLD}Mode   :{_C.RESET} {mode_s}")
+    print(f"  {_C.BOLD}LLM    :{_C.RESET} {llm_s}")
+    print(f"  {_C.BOLD}Started:{_C.RESET} {datetime.now().strftime('%Y-%m-%d  %H:%M:%S')}\n")
+
+    try:
+        project_root = str(settings.PROJECT_ROOT)
+        if project_root not in sys.path:
+            sys.path.insert(0, project_root)
+
+        from src.config import config
+        from src.data.sentinel5p import Sentinel5PClient
+        from src.data.carbonmapper import CarbonMapperClient
+        from src.data.infrastructure import InfrastructureDB
+        from src.fusion.hotspot_detector import HotspotDetector
+        from src.fusion.tasking_simulator import TaskingSimulator
+        from src.fusion.spatial_join import SpatialJoiner
+        from src.plume.inversion import PlumeInverter
+        from src.plume.wind import WindField
+
+        use_demo = (mode == 'demo')
+
+        # ════════════════════════════════════════════════════════════════
+        # STEP 1 — Sentinel-5P
+        # ════════════════════════════════════════════════════════════════
+        t0 = _step_hdr(1, run_pk)
+        s5p = Sentinel5PClient()
+        if use_demo:
+            print(_inf("Source  : models/dataset/India_Methane_Hotspots.csv"))
+            print(_inf("Loading bundled 30-day TROPOMI CH4 mosaic …"))
+            hotspots_df = s5p.load_hotspots_csv()
+            stats = s5p.get_summary_stats()
+        else:
+            print(_inf("Source  : Google Earth Engine  COPERNICUS/S5P/OFFL/L3_CH4"))
+            print(_inf("Querying GEE for last 30 days …"))
+            hotspots_df = s5p.fetch_hotspots_gee(bbox=config.aoi_bbox, days=30)
+            stats = s5p.get_summary_stats_from_df(hotspots_df)
+
+        run.total_hotspots = stats['total_hotspots']
+        run.save(update_fields=['total_hotspots'])
+        _store_raw_hotspots(hotspots_df)
+
+        _hdiv()
+        print(_ok(f"Loaded  {stats['total_hotspots']} hotspot locations"))
+        _hdiv()
+        sc, mc, lc = stats['severe_count'], stats['moderate_count'], stats['low_count']
+        print(f"     Severity  :  "
+              f"{_C.RED}Severe {sc:>3}{_C.RESET}  │  "
+              f"{_C.YELLOW}Moderate {mc:>3}{_C.RESET}  │  "
+              f"{_C.DIM}Low {lc:>3}{_C.RESET}")
+        print(_dat(f"Max CH4 count  : {stats['max_count']}"))
+        print(_dat(f"Lon coverage   : {stats['lon_range'][0]:.2f}° → {stats['lon_range'][1]:.2f}°"))
+        print(_dat(f"Lat coverage   : {stats['lat_range'][0]:.2f}° → {stats['lat_range'][1]:.2f}°"))
+        if not hotspots_df.empty and 'count' in hotspots_df.columns:
+            _hdiv("·")
+            print(_dat("Top 3 hotspot rows (by CH4 count):"))
+            sample = hotspots_df.nlargest(3, 'count')
+            print(_dat(f"  {'Lat':>10}  {'Lon':>11}  {'Count':>7}  {'Severity'}"))
+            for _, r in sample.iterrows():
+                print(_dat(f"  {r['latitude']:>10.4f}  {r['longitude']:>11.4f}  {int(r['count']):>7}  {r.get('severity','')}"))
+        _step_done(t0, f"{stats['total_hotspots']} hotspots loaded")
+
+        # ════════════════════════════════════════════════════════════════
+        # STEP 2 — Anomaly Detection
+        # ════════════════════════════════════════════════════════════════
+        t0 = _step_hdr(2, run_pk)
+        sigma = config.hotspot_threshold_sigma
+        print(_inf(f"Algorithm : Z-score threshold  σ = {sigma}"))
+        print(_inf(f"Strategy  : Flag pixels > (mean + {sigma}×std) of CH4 count"))
+        print(_inf("Running detection …"))
+        detector   = HotspotDetector(threshold_sigma=sigma)
+        detected   = detector.detect(hotspots_df)
+        candidates = detector.get_tasking_candidates(detected)
+        det_sum    = detector.summary(detected)
+        run.detected_hotspots_count = len(candidates)
+        run.save(update_fields=['detected_hotspots_count'])
+        _store_detected_hotspots(detected, run)
+
+        _hdiv()
+        print(_ok(f"Threshold passed  : {det_sum['above_threshold']} / {det_sum['total_analyzed']} points"))
+        _hdiv()
+        print(_dat(f"Priority 1 — CRITICAL  : {det_sum['priority_1_critical']}"))
+        print(_dat(f"Priority 2 — HIGH      : {det_sum['priority_2_high']}"))
+        print(_dat(f"Max anomaly score      : {det_sum['max_anomaly_score']:.4f} σ"))
+        print(_dat(f"Tasking candidates     : {len(candidates)}"))
+        if candidates:
+            _hdiv("·")
+            print(_dat("Top 5 candidates (by anomaly score):"))
+            print(_dat(f"  {'#':<4} {'Lat':>10} {'Lon':>11} {'Score':>8} {'Severity'}"))
+            print(_dat(f"  {'─'*4} {'─'*10} {'─'*11} {'─'*8} {'─'*10}"))
+            for i, h in enumerate(candidates[:5], 1):
+                sc = _C.RED if h.severity=="Severe" else (_C.YELLOW if h.severity=="Moderate" else _C.DIM)
+                print(_dat(f"  {i:<4} {h.latitude:>10.4f} {h.longitude:>11.4f} {h.anomaly_score:>8.4f} "
+                           f"{sc}{h.severity}{_C.RESET}"))
+        _step_done(t0, f"{det_sum['above_threshold']} super-emitter candidates")
+
+        # ════════════════════════════════════════════════════════════════
+        # STEP 3 — Satellite Tasking
+        # ════════════════════════════════════════════════════════════════
+        t0 = _step_hdr(3, run_pk)
+        print(_inf("Evaluating candidates against tasking criteria …"))
+        print(_inf("Satellites available: CarbonMapper-Tanager, GHGSat, PRISMA"))
+        tasking       = TaskingSimulator()
+        requests_list = tasking.create_tasking_requests(candidates, max_requests=15)
+        task_sum      = tasking.summary()
+        _store_tasking_requests(requests_list, run)
+
+        _hdiv()
+        print(_ok(f"Tasking requests created  : {task_sum['total_requests']}"))
+        _hdiv()
+        for sat, cnt in task_sum["by_satellite"].items():
+            if cnt > 0:
+                bar = "█" * cnt
+                print(_dat(f"  {sat:<30}  {_C.CYAN}{bar}{_C.RESET}  {cnt}"))
+        if requests_list:
+            _hdiv("·")
+            print(_dat("First 3 requests:"))
+            for r in requests_list[:3]:
+                coords = f"({getattr(r,'latitude',0):.4f}, {getattr(r,'longitude',0):.4f})"
+                print(_dat(f"  {getattr(r,'satellite','—'):<30} Pri:{getattr(r,'priority','—')}  {coords}"))
+        _step_done(t0, f"{task_sum['total_requests']} acquisitions queued")
+
+        # ════════════════════════════════════════════════════════════════
+        # STEP 4 — CarbonMapper Plumes
+        # ════════════════════════════════════════════════════════════════
+        t0 = _step_hdr(4, run_pk)
+        cm = CarbonMapperClient()
+        hotspot_coords = [(h.latitude, h.longitude) for h in candidates]
+
+        if use_demo:
+            print(_inf("Source  : Synthetic high-res plumes  (log-normal  μ=3.9 σ=1.0)"))
+            print(_inf("Jitter  : ±0.005° spatial noise on hotspot centroids"))
+            print(_inf("Generating plumes …"))
+            plumes = cm.generate_synthetic_plumes(hotspot_coords)
+            print(_ok(f"Generated {len(plumes)} modelled plumes"))
+        else:
+            from datetime import timedelta
+            end_date   = datetime.now().strftime('%Y-%m-%d')
+            start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+            print(_inf(f"Querying CarbonMapper STAC  {start_date} → {end_date}"))
+            plumes = cm.search_plumes(bbox=config.aoi_bbox, date_start=start_date, date_end=end_date)
+            if not plumes:
+                print(_warn("STAC returned 0 results (tasking lag). Falling back to synthetic."))
                 plumes = cm.generate_synthetic_plumes(hotspot_coords)
+                print(_ok(f"Generated {len(plumes)} modelled plumes (fallback)"))
             else:
-                from datetime import timedelta
-                end_date = datetime.now().strftime('%Y-%m-%d')
-                start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
-                plumes = cm.search_plumes(bbox=config.aoi_bbox, date_start=start_date, date_end=end_date)
-                if not plumes:
-                    plumes = cm.generate_synthetic_plumes(hotspot_coords)
+                print(_ok(f"Retrieved {len(plumes)} plumes from CarbonMapper STAC API"))
 
-            run.plumes_count = len(plumes)
-            _store_plumes(plumes, run, is_synthetic=use_demo)
+        run.plumes_count = len(plumes)
+        run.save(update_fields=['plumes_count'])
+        _store_plumes(plumes, run, is_synthetic=use_demo)
 
-            # Step 5: Spatial join
-            infra = InfrastructureDB(data_path=config.dataset_dir / "demo_industries.csv")
-            joiner = SpatialJoiner(radius_km=config.spatial_join_radius_km)
-            attributions = joiner.join(plumes, infra)
-            run.attributions_count = len(attributions)
-            _store_attributions(attributions, run)
+        plume_df = cm.plumes_to_dataframe(plumes)
+        if not plume_df.empty and 'emission_rate_kg_hr' in plume_df.columns:
+            rates = plume_df['emission_rate_kg_hr']
+            _hdiv()
+            print(_dat(f"Emission range  : {rates.min():.1f} – {rates.max():.1f} kg/hr"))
+            print(_dat(f"Mean emission   : {rates.mean():.1f} kg/hr"))
+            print(_dat(f"Median emission : {rates.median():.1f} kg/hr"))
+            print(_dat(f"Std deviation   : {rates.std():.1f} kg/hr"))
+            _hdiv("·")
+            print(_dat("Top 5 plumes by emission rate:"))
+            print(_dat(f"  {'ID':<12} {'Lat':>9} {'Lon':>10} {'kg/hr':>8} {'Length(m)':>10} {'Quality'}"))
+            print(_dat(f"  {'─'*12} {'─'*9} {'─'*10} {'─'*8} {'─'*10} {'─'*8}"))
+            for _, row in plume_df.nlargest(5, 'emission_rate_kg_hr').iterrows():
+                qc = _C.RED if row['emission_rate_kg_hr'] > 200 else (_C.YELLOW if row['emission_rate_kg_hr'] > 80 else _C.DIM)
+                print(_dat(f"  {str(row['plume_id']):<12} {row['latitude']:>9.4f} {row['longitude']:>10.4f} "
+                           f"{qc}{row['emission_rate_kg_hr']:>8.1f}{_C.RESET} "
+                           f"{row['plume_length_m']:>10.0f} {row['quality_flag']}"))
+        _step_done(t0, f"{len(plumes)} plumes characterised")
 
-            # Step 6: Plume inversion (top 5 emitters)
-            inverter = PlumeInverter(stability_class="D")
-            wind = WindField(use_live=not use_demo)
-            top_emitters = sorted(attributions, key=lambda a: a.emission_rate_kg_hr, reverse=True)[:5]
-            _run_and_store_inversions(top_emitters, inverter, wind, run)
+        # ════════════════════════════════════════════════════════════════
+        # STEP 5 — Infrastructure Attribution
+        # ════════════════════════════════════════════════════════════════
+        t0 = _step_hdr(5, run_pk)
+        print(_inf(f"Join algorithm : Haversine distance ≤ {config.spatial_join_radius_km} km"))
+        print(_inf("Loading facilities and computing nearest-neighbour distances …"))
+        infra      = InfrastructureDB(data_path=config.dataset_dir / "demo_industries.csv")
+        facilities = infra.load_facilities()
+        joiner     = SpatialJoiner(radius_km=config.spatial_join_radius_km)
 
-            # Step 7: Reports (top 3 — LLM optional)
-            if use_llm:
-                try:
-                    from src.agent.reporting_agent import ComplianceAuditAgent
-                    agent = ComplianceAuditAgent(
-                        model=config.ollama_model,
-                        base_url=config.ollama_base_url,
-                    )
-                    top_for_report = sorted(attributions, key=lambda a: a.emission_rate_kg_hr, reverse=True)[:3]
-                    reports = agent.generate_batch_reports(top_for_report)
-                    run.reports_count = len(reports)
-                    _store_reports(reports, run)
-                except Exception as e:
-                    run.error_message += f"LLM report generation failed: {str(e)}\n"
+        fac_types = {}
+        for f in facilities:
+            fac_types[f.facility_type] = fac_types.get(f.facility_type, 0) + 1
+        print(_ok(f"Loaded {len(facilities)} infrastructure facilities"))
+        _hdiv("·")
+        print(_dat("Facility type breakdown:"))
+        for ft, cnt in sorted(fac_types.items(), key=lambda x: -x[1]):
+            print(_dat(f"  {ft:<16}  {_C.CYAN}{'▪'*min(cnt,20)}{_C.RESET}  {cnt}"))
 
-            run.status = 'completed'
-            run.completed_at = timezone.now()
-            run.save()
+        print(_inf("Joining plumes → facilities …"))
+        attributions = joiner.join(plumes, facilities)
+        metrics      = joiner.metrics(attributions)
+        run.attributions_count = len(attributions)
+        run.save(update_fields=['attributions_count'])
+        _store_attributions(attributions, run)
 
-            return Response(
-                PipelineRunSerializer(run).data,
-                status=status.HTTP_201_CREATED,
+        _hdiv()
+        if metrics['total_attributed'] > 0:
+            print(_ok(f"Attributed  {metrics['total_attributed']} / {len(plumes)} plumes  →  facilities"))
+            _hdiv()
+            print(_dat(f"Mean pinpoint accuracy  : {metrics['mean_pinpoint_accuracy_m']:.0f} m"))
+            print(_dat(f"≤ 500 m accuracy        : {metrics['pct_within_500m']:.1f}%"))
+            print(_dat(f"≤ 1 km accuracy         : {metrics['pct_within_1km']:.1f}%"))
+            print(_dat(f"High confidence joins   : {metrics['high_confidence_pct']:.1f}%"))
+            print(_dat(f"Total attributed load   : {metrics['total_emission_rate_kg_hr']:.1f} kg/hr"))
+            _hdiv("·")
+            print(_dat("Full attribution table:"))
+            print(_dat(f"  {'Facility':<40} {'Operator':<22} {'Dist(m)':>8} {'kg/hr':>8} {'Conf'}"))
+            print(_dat(f"  {'─'*40} {'─'*22} {'─'*8} {'─'*8} {'─'*6}"))
+            for a in attributions:
+                cc = _C.GREEN if a.confidence=='high' else (_C.YELLOW if a.confidence=='medium' else _C.DIM)
+                rc = _C.RED   if a.emission_rate_kg_hr > 150 else (_C.YELLOW if a.emission_rate_kg_hr > 60 else _C.RESET)
+                print(_dat(f"  {a.facility_name[:40]:<40} {a.operator[:22]:<22} "
+                           f"{a.pinpoint_accuracy_m:>8.0f} "
+                           f"{rc}{a.emission_rate_kg_hr:>8.1f}{_C.RESET} "
+                           f"{cc}{a.confidence}{_C.RESET}"))
+        else:
+            print(_warn(f"0 plumes attributed (no facility within {config.spatial_join_radius_km} km)"))
+        _step_done(t0, f"{metrics['total_attributed']} facility attributions")
+
+        # ════════════════════════════════════════════════════════════════
+        # STEP 6 — Plume Inversion
+        # ════════════════════════════════════════════════════════════════
+        t0 = _step_hdr(6, run_pk)
+        wind_src = "Open-Meteo live API" if not use_demo else "synthetic wind field (offline)"
+        print(_inf("Physics model  : Gaussian plume dispersion (Pasquill–Gifford class D)"))
+        print(_inf(f"Wind data      : {wind_src}"))
+        print(_inf("Optimisation   : PyTorch gradient-based inversion"))
+        print(_inf("Running inversion for top 5 attributed emitters …"))
+        _hdiv()
+
+        inverter     = PlumeInverter(stability_class="D")
+        wind         = WindField(use_live=not use_demo)
+        top_emitters = sorted(attributions, key=lambda a: a.emission_rate_kg_hr, reverse=True)[:5]
+
+        # DB storage (silent)
+        _run_and_store_inversions(top_emitters, inverter, wind, run)
+
+        # Terminal display loop (always runs, independent of DB storage)
+        inversion_results = []
+        for i, attr in enumerate(top_emitters, 1):
+            wind_data   = wind.get_wind(attr.plume_lat, attr.plume_lon)
+            true_Q_kg_s = attr.emission_rate_kg_hr / 3600
+            synth = inverter.create_synthetic_observation(
+                true_Q_kg_s=true_Q_kg_s,
+                wind_speed=wind_data.speed_ms,
+                stability_class=wind_data.stability_class,
+                n_receptors=200,
+                domain_m=3000,
+                noise_level=0.05,
             )
-
-        except Exception as e:
-            run.status = 'failed'
-            run.error_message = traceback.format_exc()
-            run.completed_at = timezone.now()
-            run.save()
-            return Response(
-                {
-                    'error': str(e),
-                    'run_id': run.pk,
-                    'status': 'failed',
-                },
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            result = inverter.invert(
+                observed_concentrations=synth["observed_concentrations"],
+                receptor_x=synth["receptor_x"],
+                receptor_y=synth["receptor_y"],
+                receptor_z=synth["receptor_z"],
+                wind_speed=wind_data.speed_ms,
+                initial_Q=0.01,
+                source_height=5.0,
+                true_Q_kg_hr=synth["true_Q_kg_hr"],
             )
+            inversion_results.append(result)
+            conv  = _pc("✔ converged",     _C.GREEN) if result.converged else _pc("✗ not converged", _C.RED)
+            ec    = (_C.GREEN if result.error_pct < 15 else (_C.YELLOW if result.error_pct < 30 else _C.RED))
+            print(f"  {_C.BOLD}[{i}]{_C.RESET} {attr.facility_name[:38]:<38}")
+            print(_dat(f"  True rate  : {synth['true_Q_kg_hr']:>8.2f} kg/hr"))
+            print(_dat(f"  Estimated  : {result.estimated_Q_kg_hr:>8.2f} kg/hr"
+                       f"   95% CI [{result.confidence_interval[0]:.1f}, {result.confidence_interval[1]:.1f}]"))
+            print(_dat(f"  Error      : {ec}{result.error_pct:.2f}%{_C.RESET}"
+                       f"   Wind: {wind_data.speed_ms:.1f} m/s  Dir: {wind_data.direction_deg:.0f}°"
+                       f"   Status: {conv}"))
+            if i < len(top_emitters):
+                _hdiv("·")
+
+        if inversion_results:
+            errors = [r.error_pct for r in inversion_results if r.error_pct is not None]
+            if errors:
+                _hdiv()
+                me = np.mean(errors)
+                ec = _C.GREEN if me < 15 else (_C.YELLOW if me < 30 else _C.RED)
+                print(_ok(f"Mean inversion error : {ec}{me:.2f}%{_C.RESET}"))
+        _step_done(t0, f"{len(top_emitters)} emission rates solved")
+
+        # ════════════════════════════════════════════════════════════════
+        # STEP 7 — Compliance Reports
+        # ════════════════════════════════════════════════════════════════
+        t0 = _step_hdr(7, run_pk)
+        if use_llm:
+            print(_inf(f"Agent model    : {config.ollama_model}  @  {config.ollama_base_url}"))
+            print(_inf("Agent role     : Regulatory compliance officer"))
+            print(_inf("Output format  : Markdown (exec summary + risk level + remediation)"))
+            print(_inf("Generating reports for top 3 attributed emitters …"))
+            try:
+                from src.agent.reporting_agent import ComplianceAuditAgent
+                agent          = ComplianceAuditAgent(model=config.featherless_model, api_key=config.featherless_api_key, base_url=config.featherless_base_url)
+                top_for_report = sorted(attributions, key=lambda a: a.emission_rate_kg_hr, reverse=True)[:3]
+                plume_map      = {p.plume_id: p for p in plumes}
+                reports        = agent.generate_batch_reports(top_for_report, plume_map)
+                run.reports_count = len(reports)
+                run.save(update_fields=['reports_count'])
+                _store_reports(reports, run)
+                _hdiv()
+                for rpt in reports:
+                    rc = (_C.RED    if 'CRITICAL' in rpt.risk_level.upper() else
+                          _C.YELLOW if 'HIGH'     in rpt.risk_level.upper() else _C.GREEN)
+                    print(_ok(f"{rpt.report_id}"))
+                    print(_dat(f"  Facility   : {rpt.facility_name}"))
+                    print(_dat(f"  Risk level : {rc}{rpt.risk_level}{_C.RESET}"))
+                    _hdiv("·")
+            except Exception as e:
+                print(_warn(f"LLM report generation failed: {e}"))
+                run.error_message += f"LLM report generation failed: {str(e)}\n"
+                run.save(update_fields=['error_message'])
+        else:
+            print(_warn("LLM disabled — skipping autonomous report generation."))
+            run.reports_count = 0
+        _step_done(t0, f"{run.reports_count} reports written")
+
+        # ════════════════════════════════════════════════════════════════
+        # FINAL SUMMARY
+        # ════════════════════════════════════════════════════════════════
+        total_elapsed = time.time() - pipeline_start
+        run.status       = 'completed'
+        run.completed_at = tz.now()
+        run.save(update_fields=['status', 'completed_at'])
+
+        print(_pc("═" * W, _C.CYAN))
+        print(_pc(f"  🏁  PIPELINE COMPLETE  —  Run #{run_pk}", _C.BOLD + _C.WHITE))
+        print(_pc("═" * W, _C.CYAN))
+        def _sr(lbl, val, col=_C.WHITE): print(f"  {_C.DIM}{lbl:<40}{_C.RESET}  {col}{val}{_C.RESET}")
+        _sr("Sentinel-5P hotspots analysed",  stats['total_hotspots'])
+        _sr("Super-emitter candidates",        det_sum['above_threshold'],              _C.YELLOW)
+        _sr("Satellite tasking requests",       task_sum['total_requests'],              _C.CYAN)
+        _sr("Plumes characterised",             len(plumes),                             _C.CYAN)
+        _sr("Attributed to facilities",         metrics['total_attributed'],
+            _C.GREEN if metrics['total_attributed'] > 0 else _C.RED)
+        if metrics['total_attributed'] > 0:
+            _sr("Total attributed emission load", f"{metrics['total_emission_rate_kg_hr']:.1f} kg/hr", _C.RED)
+            _sr("Mean pinpoint accuracy",         f"{metrics['mean_pinpoint_accuracy_m']:.0f} m",      _C.GREEN)
+        _sr("Audit reports generated",          run.reports_count,                       _C.GREEN)
+        _sr("Total pipeline runtime",           f"{total_elapsed:.2f} s",                _C.CYAN)
+        print(_pc("═" * W, _C.CYAN))
+        print()
+
+    except Exception as e:
+        run.status        = 'failed'
+        run.error_message = traceback.format_exc()
+        run.completed_at  = timezone.now()
+        run.save(update_fields=['status', 'error_message', 'completed_at'])
+        print(_pc(f"\n  ✗  PIPELINE FAILED (Run #{run_pk}): {e}\n", _C.RED + _C.BOLD))
+        print(_pc(traceback.format_exc(), _C.DIM + _C.RED))
+
+
 
 
 # ─── Dashboard Summary ────────────────────────────────────────────────────
@@ -719,6 +1046,79 @@ def attributions_geojson(request):
     })
 
 
+# ─── DB-based Heatmap Fallback ────────────────────────────────────────────
+
+@api_view(['GET'])
+def heatmap_fallback(request):
+    """
+    Return heatmap-ready [lat, lng, intensity] points derived from existing
+    database records (MethaneHotspot + DetectedHotspot + PlumeObservation).
+    Used when GEE is unavailable.
+
+    Returns:
+        {
+            "points":     [[lat, lng, intensity], ...],
+            "stats":      { mean, std, min, max, count },
+            "source":     "database",
+            "raw_points": [[lat, lng, raw_value], ...],
+        }
+    """
+    import numpy as np
+
+    raw_points = []  # [[lat, lng, raw_value], ...]
+
+    # 1) MethaneHotspot.count → use as raw intensity proxy
+    for h in MethaneHotspot.objects.values_list('latitude', 'longitude', 'count'):
+        if h[0] is not None and h[1] is not None and h[2] is not None:
+            raw_points.append([float(h[0]), float(h[1]), float(h[2])])
+
+    # 2) DetectedHotspot.ch4_count
+    for d in DetectedHotspot.objects.values_list('latitude', 'longitude', 'ch4_count'):
+        if d[0] is not None and d[1] is not None and d[2] is not None:
+            raw_points.append([float(d[0]), float(d[1]), float(d[2])])
+
+    # 3) PlumeObservation.emission_rate_kg_hr (scaled to same order)
+    plumes = list(PlumeObservation.objects.values_list(
+        'latitude', 'longitude', 'emission_rate_kg_hr'
+    ))
+    if plumes:
+        # Scale plume emission rates to roughly match hotspot counts
+        max_count = max((p[2] for p in raw_points), default=1) if raw_points else 1
+        max_plume = max((p[2] for p in plumes if p[2]), default=1)
+        scale = max_count / max_plume if max_plume else 1
+        for p in plumes:
+            if p[0] is not None and p[1] is not None and p[2] is not None:
+                raw_points.append([float(p[0]), float(p[1]), float(p[2]) * scale])
+
+    if not raw_points:
+        return Response({
+            'points': [], 'stats': {}, 'raw_points': [], 'source': 'database',
+        })
+
+    values = np.array([p[2] for p in raw_points])
+    v_min = float(np.nanmin(values))
+    v_max = float(np.nanmax(values))
+    v_mean = float(np.nanmean(values))
+    v_std = float(np.nanstd(values))
+    spread = v_max - v_min if v_max > v_min else 1.0
+
+    # Normalise to 0-1
+    points = [[p[0], p[1], (p[2] - v_min) / spread] for p in raw_points]
+
+    return Response({
+        'points': points,
+        'raw_points': raw_points,
+        'stats': {
+            'mean': round(v_mean, 2),
+            'std': round(v_std, 2),
+            'min': round(v_min, 2),
+            'max': round(v_max, 2),
+            'count': len(values),
+        },
+        'source': 'database',
+    })
+
+
 # ─── Google Earth Engine Endpoints ─────────────────────────────────────────
 
 @api_view(['GET'])
@@ -750,6 +1150,9 @@ def gee_ch4_heatmap(request):
         num_points – max sample points (default 1000)
         scale      – sampling resolution in metres (default 20000)
     """
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
     days = int(request.query_params.get('days', 30))
     num_points = int(request.query_params.get('num_points', 1000))
     scale = int(request.query_params.get('scale', 20000))
@@ -757,10 +1160,167 @@ def gee_ch4_heatmap(request):
     try:
         from .gee_service import get_heatmap_points
         result = get_heatmap_points(days=days, num_points=num_points, scale=scale)
+        _log.info('[GEE] ch4-heatmap: returned %d points', len(result.get('points', [])))
+        return Response(result)
+    except TimeoutError as e:
+        _log.warning('[GEE] ch4-heatmap timed out: %s', e)
+        return Response(
+            {'error': 'timeout', 'detail': str(e)},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    except Exception as e:
+        _log.warning('[GEE] ch4-heatmap failed (%s): %s', type(e).__name__, e)
+        return Response(
+            {'error': type(e).__name__, 'detail': str(e)},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+
+@api_view(['GET'])
+def gee_ch4_hotspots(request):
+    """
+    Detect CH4 anomaly hotspots from Sentinel-5P TROPOMI for an explicit date range.
+
+    Query params:
+        start_date – YYYY-MM-DD  (default: 7 days ago)
+        end_date   – YYYY-MM-DD  (default: today)
+        num_points – max sample points (default 1000)
+        scale      – sampling resolution in metres (default 20000)
+
+    Returns:
+        {
+            "hotspots": [ { id, latitude, longitude, ch4_ppb, anomaly_score, severity, priority, detected_at }, … ],
+            "stats":    { mean, std, min, max, count, total_sampled },
+            "tile_url": "https://earthengine.googleapis.com/…" | null,
+            "start_date": "YYYY-MM-DD",
+            "end_date":   "YYYY-MM-DD",
+        }
+    """
+    from datetime import date, timedelta
+    _today = date.today()
+    default_start = (_today - timedelta(days=7)).strftime("%Y-%m-%d")
+    default_end   = _today.strftime("%Y-%m-%d")
+
+    start_date = request.query_params.get('start_date', default_start)
+    end_date   = request.query_params.get('end_date',   default_end)
+    num_points = int(request.query_params.get('num_points', 1000))
+    scale      = int(request.query_params.get('scale',      20000))
+
+    try:
+        from .gee_service import get_hotspots_by_dates
+        result = get_hotspots_by_dates(
+            start_date=start_date,
+            end_date=end_date,
+            num_points=num_points,
+            scale=scale,
+        )
         return Response(result)
     except Exception as e:
         return Response(
-            {'error': str(e), 'detail': 'GEE heatmap query failed. Check Earth Engine authentication.'},
+            {
+                'error':  str(e),
+                'detail': (
+                    'GEE hotspot query failed. '
+                    'Ensure Earth Engine is authenticated and the date range '
+                    'falls within the Sentinel-5P TROPOMI archive (after May 2018).'
+                ),
+            },
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+
+@api_view(['GET'])
+def gee_company_analysis(request):
+    """
+    Company-centric CH4 analysis via Google Earth Engine.
+
+    Accepts either a ``facility_id`` (database PK) to auto-resolve coordinates,
+    or explicit ``lat`` / ``lng``.  Queries Sentinel-5P TROPOMI data within
+    ``radius_km`` of that location for the given date range.
+
+    Query params:
+        facility_id – PK of a Facility (optional – overrides lat/lng)
+        lat / lng   – centre coordinates (required if no facility_id)
+        radius_km   – search radius in km (default 50)
+        start_date  – YYYY-MM-DD  (default: 30 days ago)
+        end_date    – YYYY-MM-DD  (default: today)
+        num_points  – max sample points (default 1000)
+        scale       – sampling resolution in metres (default 10000)
+
+    Returns the same structure as ``get_hotspots_by_location`` plus a
+    ``facility`` object when resolved from ``facility_id``.
+    """
+    from datetime import date, timedelta
+
+    _today = date.today()
+    default_start = (_today - timedelta(days=30)).strftime("%Y-%m-%d")
+    default_end   = _today.strftime("%Y-%m-%d")
+
+    facility_id = request.query_params.get('facility_id')
+    lat         = request.query_params.get('lat')
+    lng         = request.query_params.get('lng')
+    radius_km   = float(request.query_params.get('radius_km', 50))
+    start_date  = request.query_params.get('start_date', default_start)
+    end_date    = request.query_params.get('end_date',   default_end)
+    num_points  = int(request.query_params.get('num_points', 1000))
+    scale       = int(request.query_params.get('scale',      10000))
+
+    facility_data = None
+
+    if facility_id:
+        try:
+            fac = Facility.objects.get(pk=facility_id)
+        except Facility.DoesNotExist:
+            return Response(
+                {'error': f'Facility with id={facility_id} not found.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        lat = float(fac.latitude)
+        lng = float(fac.longitude)
+        facility_data = {
+            'id':        fac.pk,
+            'facility_id': fac.facility_id,
+            'name':      fac.name,
+            'operator':  fac.operator,
+            'type':      fac.type,
+            'state':     fac.state,
+            'status':    fac.status,
+            'latitude':  float(fac.latitude),
+            'longitude': float(fac.longitude),
+        }
+    else:
+        if not lat or not lng:
+            return Response(
+                {'error': 'Provide either facility_id or both lat & lng.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        lat = float(lat)
+        lng = float(lng)
+
+    try:
+        from .gee_service import get_hotspots_by_location
+        result = get_hotspots_by_location(
+            center_lat=lat,
+            center_lng=lng,
+            radius_km=radius_km,
+            start_date=start_date,
+            end_date=end_date,
+            num_points=num_points,
+            scale=scale,
+        )
+        if facility_data:
+            result['facility'] = facility_data
+        return Response(result)
+    except Exception as e:
+        return Response(
+            {
+                'error':  str(e),
+                'detail': (
+                    'GEE company analysis failed. '
+                    'Ensure Earth Engine is authenticated and the date range '
+                    'falls within the Sentinel-5P TROPOMI archive (after May 2018).'
+                ),
+            },
             status=status.HTTP_503_SERVICE_UNAVAILABLE,
         )
 
@@ -842,8 +1402,8 @@ def _store_plumes(plumes, run, is_synthetic=True):
             latitude=p.latitude,
             longitude=p.longitude,
             emission_rate_kg_hr=p.emission_rate_kg_hr,
-            wind_speed_ms=p.wind_speed,
-            wind_direction_deg=p.wind_direction,
+            wind_speed_ms=getattr(p, 'wind_speed_ms', getattr(p, 'wind_speed', 3.0)),
+            wind_direction_deg=getattr(p, 'wind_direction_deg', getattr(p, 'wind_direction', 0.0)),
             plume_length_m=getattr(p, 'plume_length_m', None),
             sector=getattr(p, 'sector', ''),
             concentration_ppm=getattr(p, 'concentration_ppm', None),
@@ -930,17 +1490,124 @@ def _run_and_store_inversions(top_emitters, inverter, wind, run):
 
 def _store_reports(reports, run):
     """Store audit reports in DB."""
+    import re as _re
+
+    _RISK_MAP = {'CRITICAL': 'CRITICAL', 'HIGH': 'HIGH', 'MEDIUM': 'MEDIUM', 'LOW': 'LOW'}
+    _CONF_MAP = {'CRITICAL': 'high', 'HIGH': 'high', 'MEDIUM': 'medium', 'LOW': 'low'}
+
     for report in reports:
         facility = Facility.objects.filter(facility_id=report.facility_id).first()
-        if facility:
-            AuditReport.objects.create(
-                report_id=report.report_id,
-                facility=facility,
-                attribution=None,
-                emission_rate_kg_hr=report.emission_rate_kg_hr,
-                risk_level=report.risk_level.upper(),
-                confidence=report.confidence,
-                report_markdown=report.markdown,
-                executive_summary=report.executive_summary,
-                pipeline_run=run,
+        if not facility:
+            continue
+
+        # Strip emoji / colour-indicator prefixes from risk_level
+        # e.g. "🔴 CRITICAL" → "CRITICAL", "🟠 HIGH" → "HIGH"
+        raw_risk    = getattr(report, 'risk_level', 'MEDIUM') or 'MEDIUM'
+        clean_risk  = _re.sub(r'[^\w\s]', '', raw_risk).strip().upper()
+        risk_level  = next((v for k, v in _RISK_MAP.items() if k in clean_risk), 'MEDIUM')
+        confidence  = _CONF_MAP.get(risk_level, 'medium')
+
+        # Full markdown content
+        report_markdown = getattr(report, 'report_markdown', '') or ''
+
+        # Executive summary: prefer llm_analysis first paragraph, else first
+        # substantial line of the markdown, else empty string
+        exec_summary = getattr(report, 'llm_analysis', '') or ''
+        if exec_summary:
+            exec_summary = exec_summary.split('\n\n')[0].strip()
+        if not exec_summary:
+            for line in report_markdown.split('\n'):
+                line = line.strip()
+                if line and not line.startswith('#') and len(line) > 40:
+                    exec_summary = line
+                    break
+        exec_summary = exec_summary[:1000]   # stay within TextField comfort zone
+
+        AuditReport.objects.update_or_create(
+            report_id=report.report_id,
+            defaults={
+                'facility':            facility,
+                'attribution':         None,
+                'emission_rate_kg_hr': report.emission_rate_kg_hr,
+                'risk_level':          risk_level,
+                'confidence':          confidence,
+                'report_markdown':     report_markdown,
+                'executive_summary':   exec_summary,
+                'pipeline_run':        run,
+            },
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Authentication Views
+# ═══════════════════════════════════════════════════════════════════════════
+
+class RegisterView(APIView):
+    """User registration endpoint."""
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = RegisterSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(
+                {'errors': serializer.errors},
+                status=status.HTTP_400_BAD_REQUEST,
             )
+        user = serializer.save()
+        token, _ = Token.objects.get_or_create(user=user)
+        return Response(
+            {
+                'message': 'Account created successfully.',
+                'token': token.key,
+                'user': {
+                    'id': user.id,
+                    'username': user.username,
+                    'email': user.email,
+                    'first_name': user.first_name,
+                    'last_name': user.last_name,
+                },
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class LoginView(APIView):
+    """User login endpoint."""
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = LoginSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(
+                {'errors': serializer.errors},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        user = authenticate(
+            username=serializer.validated_data['username'],
+            password=serializer.validated_data['password'],
+        )
+        if user is None:
+            return Response(
+                {'errors': {'non_field_errors': ['Invalid username or password.']}},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+        if not user.is_active:
+            return Response(
+                {'errors': {'non_field_errors': ['This account has been deactivated.']}},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        token, _ = Token.objects.get_or_create(user=user)
+        return Response(
+            {
+                'message': 'Login successful.',
+                'token': token.key,
+                'user': {
+                    'id': user.id,
+                    'username': user.username,
+                    'email': user.email,
+                    'first_name': user.first_name,
+                    'last_name': user.last_name,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )

@@ -22,6 +22,10 @@ urlpatterns = [
     # ViewSet routes (CRUD + custom actions)
     path('', include(router.urls)),
 
+    # Authentication
+    path('auth/register/', views.RegisterView.as_view(), name='auth-register'),
+    path('auth/login/', views.LoginView.as_view(), name='auth-login'),
+
     # Pipeline trigger
     path('pipeline/trigger/', views.PipelineTriggerView.as_view(), name='pipeline-trigger'),
 
@@ -34,7 +38,12 @@ urlpatterns = [
     path('geojson/hotspots/', views.hotspots_geojson, name='geojson-hotspots'),
     path('geojson/attributions/', views.attributions_geojson, name='geojson-attributions'),
 
-    # Google Earth Engine endpoints (heatmap)
+    # Heatmap fallback (DB-based, when GEE is unavailable)
+    path('heatmap/fallback/', views.heatmap_fallback, name='heatmap-fallback'),
+
+    # Google Earth Engine endpoints
     path('gee/ch4-tiles/', views.gee_ch4_tiles, name='gee-ch4-tiles'),
     path('gee/ch4-heatmap/', views.gee_ch4_heatmap, name='gee-ch4-heatmap'),
+    path('gee/ch4-hotspots/', views.gee_ch4_hotspots, name='gee-ch4-hotspots'),
+    path('gee/company-analysis/', views.gee_company_analysis, name='gee-company-analysis'),
 ]

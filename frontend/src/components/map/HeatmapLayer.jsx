@@ -10,7 +10,7 @@
  * Must be used inside a <MapContainer>.
  */
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useMemo } from 'react'
 import { useMap } from 'react-leaflet'
 import L from 'leaflet'
 import 'leaflet.heat'
@@ -25,7 +25,7 @@ const HeatmapLayer = ({
   // Default options – red-orange heat theme:
   // low intensity → light peach/orange → deep red at peak
   const defaultOptions = {
-    radius: 25,
+    radius: 30,
     blur: 20,
     maxZoom: 10,
     max: 1.0,
@@ -41,7 +41,13 @@ const HeatmapLayer = ({
     },
   }
 
-  const mergedOptions = { ...defaultOptions, ...options }
+  // Memoize merged options so we only re-create the heat layer when actual
+  // option values change (not on every parent render).
+  const mergedOptions = useMemo(
+    () => ({ ...defaultOptions, ...options }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [JSON.stringify(options)],
+  )
 
   useEffect(() => {
     if (!map) return
@@ -66,7 +72,7 @@ const HeatmapLayer = ({
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [map, points, mergedOptions.radius, mergedOptions.blur, mergedOptions.maxZoom])
+  }, [map, points, mergedOptions])
 
   return null
 }

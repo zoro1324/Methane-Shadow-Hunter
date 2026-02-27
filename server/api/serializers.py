@@ -2,6 +2,8 @@
 Django REST Framework serializers for Methane Shadow Hunter API.
 """
 
+from django.contrib.auth.models import User
+from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
 from .models import (
     Facility,
@@ -177,3 +179,49 @@ class PipelineTriggerSerializer(serializers.Serializer):
     """Serializer for triggering a pipeline run."""
     mode = serializers.ChoiceField(choices=['demo', 'live'], default='demo')
     use_llm = serializers.BooleanField(default=False)
+
+
+# ─── Authentication ─────────────────────────────────────────────────────────
+
+class RegisterSerializer(serializers.Serializer):
+    """Serializer for user registration."""
+    username = serializers.CharField(max_length=150, min_length=3)
+    email = serializers.EmailField()
+    password = serializers.CharField(write_only=True, min_length=8)
+    confirm_password = serializers.CharField(write_only=True, min_length=8)
+    first_name = serializers.CharField(max_length=150, required=False, default='')
+    last_name = serializers.CharField(max_length=150, required=False, default='')
+
+    def validate_username(self, value):
+        if User.objects.filter(username__iexact=value).exists():
+            raise serializers.ValidationError('A user with this username already exists.')
+        return value
+
+    def validate_email(self, value):
+        if User.objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError('A user with this email already exists.')
+        return value
+
+    def validate(self, data):
+        if data['password'] != data['confirm_password']:
+            raise serializers.ValidationError({'confirm_password': 'Passwords do not match.'})
+        # Run Django password validators
+        validate_password(data['password'])
+        return data
+
+    def create(self, validated_data):
+        validated_data.pop('confirm_password')
+        user = User.objects.create_user(
+            username=validated_data['username'],
+            email=validated_data['email'],
+            password=validated_data['password'],
+            first_name=validated_data.get('first_name', ''),
+            last_name=validated_data.get('last_name', ''),
+        )
+        return user
+
+
+class LoginSerializer(serializers.Serializer):
+    """Serializer for user login."""
+    username = serializers.CharField()
+    password = serializers.CharField(write_only=True)
