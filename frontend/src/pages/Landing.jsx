@@ -166,13 +166,13 @@ const Landing = () => {
             {/* CTA */}
             <div className="flex items-center gap-4">
               <Link
-                to="/dashboard"
+                to="/login"
                 className="hidden sm:inline-flex items-center gap-2 text-gray-400 hover:text-white transition-colors"
               >
                 Sign In
               </Link>
               <Link
-                to="/dashboard"
+                to="/signup"
                 className="btn-primary flex items-center gap-2"
               >
                 <span>Get Started</span>

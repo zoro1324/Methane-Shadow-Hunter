@@ -58,7 +58,7 @@ const Alerts = () => {
       rList.slice(0, 5).forEach((r) => {
         alertList.push({
           id: `RPT-${r.id}`,
-          type: r.risk_level === 'critical' ? 'critical' : r.risk_level === 'high' ? 'warning' : 'success',
+          type: r.risk_level === 'CRITICAL' ? 'critical' : r.risk_level === 'HIGH' ? 'warning' : 'success',
           title: `Report Generated: ${r.report_id}`,
           message: `Risk level: ${r.risk_level}${r.facility_name ? ` for ${r.facility_name}` : ''}`,
           location: r.facility_name || 'N/A',

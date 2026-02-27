@@ -15,9 +15,10 @@ import {
   Crosshair,
   Thermometer,
 } from 'lucide-react'
-import { geeService, geojsonService, detectedHotspotsService } from '../services/api'
+import { geeService, geojsonService, detectedHotspotsService, heatmapFallbackService } from '../services/api'
 import { StatusBadge } from '../components/ui/AlertCard'
 import HeatmapLayer from '../components/map/HeatmapLayer'
+import { mockHeatmapPoints } from '../data/mockData'
 
 // ─── Leaflet marker icons ────────────────────────────────────────────────
 
@@ -347,31 +348,44 @@ const LiveMap = () => {
   const [isLocating, setIsLocating] = useState(false)
   const [flyToTrigger, setFlyToTrigger] = useState(0)
 
-  // ── Fetch heatmap data from GEE ─────────────────────────────────────
+  // ── Fetch heatmap data: GEE + DB fallback fire in parallel ──────────
 
   const fetchHeatmapData = useCallback(async () => {
     setIsLoadingHeatmap(true)
     setHeatmapError(null)
 
-    // Fire both requests in parallel
-    const [heatmapRes, tileRes] = await Promise.allSettled([
+    // All three requests fire simultaneously.
+    // GEE heatmap has a 12 s timeout so the DB fallback wins immediately
+    // when GEE is unavailable – no sequential wait.
+    const [heatmapRes, tileRes, fallbackRes] = await Promise.allSettled([
       geeService.getCH4Heatmap(30, 1000, 20000),
       geeService.getCH4Tiles(30),
+      heatmapFallbackService.getPoints(),
     ])
 
-    if (heatmapRes.status === 'fulfilled' && heatmapRes.value?.points?.length) {
-      setHeatmapPoints(heatmapRes.value.points)
-      setHeatmapStats(heatmapRes.value.stats)
-    } else {
-      const err = heatmapRes.status === 'rejected' ? heatmapRes.reason : null
-      console.warn('Heatmap points unavailable:', err?.message || 'empty')
-      setHeatmapError('GEE heatmap data unavailable \u2013 showing markers only')
-    }
-
+    // ── GEE tile overlay (independent of heatmap) ───────────────────
     if (tileRes.status === 'fulfilled' && tileRes.value?.tile_url) {
       setGeeTileUrl(tileRes.value.tile_url)
+    }
+
+    // ── Prefer GEE heatmap; fall back to DB instantly ────────────────
+    const geeOk = heatmapRes.status === 'fulfilled' && heatmapRes.value?.points?.length > 0
+    const dbOk  = fallbackRes.status === 'fulfilled' && fallbackRes.value?.points?.length > 0
+
+    if (geeOk) {
+      // GEE data is fresh satellite data – use it
+      setHeatmapPoints(heatmapRes.value.points)
+      setHeatmapStats(heatmapRes.value.stats)
+    } else if (dbOk) {
+      // GEE unavailable – DB fallback already finished in parallel
+      setHeatmapPoints(fallbackRes.value.points)
+      setHeatmapStats(fallbackRes.value.stats)
+      setHeatmapError('GEE unavailable – showing heatmap from local data')
     } else {
-      console.warn('GEE tile URL unavailable')
+      // Both GEE and backend unavailable – use embedded CSV-derived demo data
+      setHeatmapPoints(mockHeatmapPoints)
+      setHeatmapStats({ mean: 1847, std: 42, min: 1800, max: 1950, count: mockHeatmapPoints.length })
+      setHeatmapError('Backend unavailable – showing demo heatmap (India hotspots)')
     }
 
     setIsLoadingHeatmap(false)
@@ -546,8 +560,8 @@ const LiveMap = () => {
           <HeatmapLayer
             points={heatmapPoints}
             options={{
-              radius: 12,
-              blur: 15,
+              radius: 28,
+              blur: 18,
               maxZoom: 10,
               max: 1.0,
               minOpacity: 0.35,

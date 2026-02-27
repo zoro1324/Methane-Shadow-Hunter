@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { motion } from 'framer-motion'
+import { motion, AnimatePresence } from 'framer-motion'
 import {
   FileText,
   Download,
@@ -12,9 +12,15 @@ import {
   PieChart,
   Filter,
   RefreshCw,
+  Play,
+  ChevronDown,
+  CheckCircle2,
+  XCircle,
 } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { Button, GlassCard, Spinner } from '../components/ui/Common'
-import { reportsService, dashboardService } from '../services/api'
+import { reportsService, dashboardService, pipelineService } from '../services/api'
 
 /**
  * Reports Page
@@ -26,6 +32,12 @@ const Reports = () => {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [expandedReport, setExpandedReport] = useState(null)
+
+  // Pipeline trigger state
+  const [pipelineRunning, setPipelineRunning] = useState(false)
+  const [pipelineStatus, setPipelineStatus] = useState(null)
+  const [pipelineMsg, setPipelineMsg] = useState('')
+  const [modeMenuOpen, setModeMenuOpen] = useState(false)
 
   const fetchData = async () => {
     setLoading(true)
@@ -46,6 +58,32 @@ const Reports = () => {
   }
 
   useEffect(() => { fetchData() }, [])
+
+  const runPipeline = async (mode = 'demo') => {
+    setModeMenuOpen(false)
+    setPipelineRunning(true)
+    setPipelineStatus(null)
+    setPipelineMsg(`Starting pipeline in ${mode} mode…`)
+    try {
+      const { run_id } = await pipelineService.trigger(mode)
+      setPipelineMsg(`Pipeline running (ID: ${run_id}) — polling for results…`)
+      const result = await pipelineService.pollRun(run_id, {
+        onProgress: (run) => {
+          if (run.plumes_count) setPipelineMsg(`Running… ${run.plumes_count} plumes processed`)
+        },
+      })
+      setPipelineStatus('success')
+      setPipelineMsg(
+        `Pipeline complete — ${result.reports_count ?? 0} new reports generated`
+      )
+      await fetchData()
+    } catch (err) {
+      setPipelineStatus('error')
+      setPipelineMsg(err?.response?.data?.error || err.message || 'Pipeline failed')
+    } finally {
+      setPipelineRunning(false)
+    }
+  }
 
   // View full report markdown
   const viewReport = async (id) => {
@@ -94,8 +132,85 @@ const Reports = () => {
           <Button variant="outline" icon={RefreshCw} size="sm" onClick={fetchData}>
             Refresh
           </Button>
+
+          {/* Run Pipeline split-button */}
+          <div className="relative">
+            <div className="flex items-center">
+              <button
+                onClick={() => runPipeline('demo')}
+                disabled={pipelineRunning}
+                className="flex items-center gap-2 px-4 py-2 bg-accent-green hover:bg-accent-green/80 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-l-lg transition-colors text-sm font-medium"
+              >
+                {pipelineRunning
+                  ? <Spinner size="sm" className="text-white" />
+                  : <Play className="w-4 h-4" />}
+                {pipelineRunning ? 'Running…' : 'Run Pipeline'}
+              </button>
+              <button
+                onClick={() => setModeMenuOpen(o => !o)}
+                disabled={pipelineRunning}
+                className="flex items-center px-2 py-2 bg-accent-green/80 hover:bg-accent-green/60 disabled:opacity-60 text-white rounded-r-lg border-l border-white/20 transition-colors"
+              >
+                <ChevronDown className="w-4 h-4" />
+              </button>
+            </div>
+
+            <AnimatePresence>
+              {modeMenuOpen && (
+                <motion.div
+                  initial={{ opacity: 0, y: -4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -4 }}
+                  className="absolute right-0 mt-1 w-44 glass-card border border-dark-border rounded-lg shadow-xl z-50 overflow-hidden"
+                >
+                  <button
+                    onClick={() => runPipeline('demo')}
+                    className="w-full text-left px-4 py-3 text-sm text-gray-200 hover:bg-accent-green/10 hover:text-accent-green transition-colors"
+                  >
+                    <span className="font-medium">Demo</span>
+                    <p className="text-xs text-gray-500 mt-0.5">Bundled dataset, fast</p>
+                  </button>
+                  <button
+                    onClick={() => runPipeline('live')}
+                    className="w-full text-left px-4 py-3 text-sm text-gray-200 hover:bg-accent-green/10 hover:text-accent-green transition-colors border-t border-dark-border"
+                  >
+                    <span className="font-medium">Live</span>
+                    <p className="text-xs text-gray-500 mt-0.5">GEE + CarbonMapper API</p>
+                  </button>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
         </div>
       </div>
+
+      {/* Pipeline status toast */}
+      <AnimatePresence>
+        {pipelineMsg && (
+          <motion.div
+            initial={{ opacity: 0, y: -12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -12 }}
+            className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm ${
+              pipelineRunning
+                ? 'bg-info-blue/10 border border-info-blue/30 text-info-blue'
+                : pipelineStatus === 'success'
+                ? 'bg-accent-green/10 border border-accent-green/30 text-accent-green'
+                : 'bg-danger-red/10 border border-danger-red/30 text-danger-red'
+            }`}
+          >
+            {pipelineRunning
+              ? <Spinner size="sm" className="text-info-blue" />
+              : pipelineStatus === 'success'
+              ? <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+              : <XCircle className="w-4 h-4 flex-shrink-0" />}
+            <span>{pipelineMsg}</span>
+            {!pipelineRunning && (
+              <button onClick={() => setPipelineMsg('')} className="ml-auto opacity-60 hover:opacity-100">✕</button>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Summary Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -117,7 +232,7 @@ const Reports = () => {
             </div>
             <div>
               <p className="text-xs text-gray-500">Critical</p>
-              <p className="text-xl font-bold text-white">{reports.filter(r => r.risk_level === 'critical').length}</p>
+              <p className="text-xl font-bold text-white">{reports.filter(r => r.risk_level === 'CRITICAL').length}</p>
             </div>
           </div>
         </motion.div>
@@ -128,7 +243,7 @@ const Reports = () => {
             </div>
             <div>
               <p className="text-xs text-gray-500">High Risk</p>
-              <p className="text-xl font-bold text-white">{reports.filter(r => r.risk_level === 'high').length}</p>
+              <p className="text-xl font-bold text-white">{reports.filter(r => r.risk_level === 'HIGH').length}</p>
             </div>
           </div>
         </motion.div>
@@ -199,18 +314,18 @@ const Reports = () => {
 
                 <div className="flex items-center gap-3">
                   <div className={`flex items-center gap-2 px-3 py-1 rounded-full ${
-                    report.risk_level === 'critical' ? 'bg-danger-red/10' :
-                    report.risk_level === 'high' ? 'bg-warning-yellow/10' :
+                    report.risk_level === 'CRITICAL' ? 'bg-danger-red/10' :
+                    report.risk_level === 'HIGH' ? 'bg-warning-yellow/10' :
                     'bg-accent-green/10'
                   }`}>
                     <div className={`w-2 h-2 rounded-full ${
-                      report.risk_level === 'critical' ? 'bg-danger-red' :
-                      report.risk_level === 'high' ? 'bg-warning-yellow' :
+                      report.risk_level === 'CRITICAL' ? 'bg-danger-red' :
+                      report.risk_level === 'HIGH' ? 'bg-warning-yellow' :
                       'bg-accent-green'
                     }`} />
                     <span className={`text-xs font-medium ${
-                      report.risk_level === 'critical' ? 'text-danger-red' :
-                      report.risk_level === 'high' ? 'text-warning-yellow' :
+                      report.risk_level === 'CRITICAL' ? 'text-danger-red' :
+                      report.risk_level === 'HIGH' ? 'text-warning-yellow' :
                       'text-accent-green'
                     }`}>{report.risk_level}</span>
                   </div>
@@ -244,10 +359,39 @@ const Reports = () => {
                 <span className="text-gray-400 hover:text-white text-xl">✕</span>
               </button>
             </div>
-            <div className="p-6">
-              <pre className="whitespace-pre-wrap text-sm text-gray-300 font-mono leading-relaxed">
+            <div className="p-6 report-markdown">
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  h1: ({children}) => <h1 className="text-2xl font-bold text-white mt-6 mb-3 pb-2 border-b border-dark-border flex items-center gap-2">{children}</h1>,
+                  h2: ({children}) => <h2 className="text-lg font-semibold text-accent-green mt-6 mb-2 pb-1 border-b border-dark-border/50">{children}</h2>,
+                  h3: ({children}) => <h3 className="text-base font-semibold text-white mt-4 mb-2">{children}</h3>,
+                  p:  ({children}) => <p className="text-gray-300 text-sm leading-relaxed mb-3">{children}</p>,
+                  strong: ({children}) => <strong className="text-white font-semibold">{children}</strong>,
+                  em: ({children}) => <em className="text-gray-400 italic">{children}</em>,
+                  hr: () => <hr className="my-4 border-dark-border" />,
+                  ul: ({children}) => <ul className="list-disc list-inside space-y-1 mb-3 text-sm text-gray-300">{children}</ul>,
+                  ol: ({children}) => <ol className="list-decimal list-inside space-y-1 mb-3 text-sm text-gray-300">{children}</ol>,
+                  li: ({children}) => <li className="text-gray-300 text-sm leading-relaxed">{children}</li>,
+                  code: ({inline, children}) => inline
+                    ? <code className="bg-dark-border/60 text-accent-green px-1.5 py-0.5 rounded text-xs font-mono">{children}</code>
+                    : <pre className="bg-dark-bg/80 border border-dark-border rounded-lg p-4 overflow-x-auto my-3"><code className="text-xs font-mono text-gray-300">{children}</code></pre>,
+                  blockquote: ({children}) => <blockquote className="border-l-4 border-accent-green/50 pl-4 py-1 my-3 text-gray-400 italic">{children}</blockquote>,
+                  table: ({children}) => (
+                    <div className="overflow-x-auto my-4">
+                      <table className="w-full text-sm border-collapse">{children}</table>
+                    </div>
+                  ),
+                  thead: ({children}) => <thead className="bg-dark-border/40">{children}</thead>,
+                  tbody: ({children}) => <tbody className="divide-y divide-dark-border/30">{children}</tbody>,
+                  tr: ({children}) => <tr className="hover:bg-dark-border/20 transition-colors">{children}</tr>,
+                  th: ({children}) => <th className="px-4 py-2 text-left text-xs font-semibold text-accent-green uppercase tracking-wider border-b border-dark-border">{children}</th>,
+                  td: ({children}) => <td className="px-4 py-2 text-gray-300 text-sm">{children}</td>,
+                  a: ({href, children}) => <a href={href} className="text-accent-green hover:underline" target="_blank" rel="noreferrer">{children}</a>,
+                }}
+              >
                 {expandedReport.report_markdown || 'No content available.'}
-              </pre>
+              </ReactMarkdown>
             </div>
           </motion.div>
         </motion.div>
