@@ -36,8 +36,6 @@ class TaskingSimulator:
     """
 
     SATELLITES = [
-        {"name": "GHGSat-Constellation", "resolution_m": 25, "revisit_hrs": 24},
-        {"name": "Planet-Tanager-1", "resolution_m": 30, "revisit_hrs": 48},
         {"name": "CarbonMapper-Tanager", "resolution_m": 30, "revisit_hrs": 72},
     ]
 

@@ -50,7 +50,7 @@ class HotspotDetector:
 
         mean_count = hotspots_df["count"].mean()
         std_count = hotspots_df["count"].std()
-        if std_count == 0:
+        if pd.isna(std_count) or std_count == 0:
             std_count = 1.0
 
         threshold = mean_count + self.threshold_sigma * std_count

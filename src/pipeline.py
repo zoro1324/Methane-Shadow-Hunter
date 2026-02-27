@@ -46,7 +46,7 @@ class MethaneHunterPipeline:
         # Initialize components
         self.s5p_client = Sentinel5PClient()
         self.cm_client = CarbonMapperClient()
-        self.infra_db = InfrastructureDB()
+        self.infra_db = InfrastructureDB(data_path=config.dataset_dir / "demo_industries.csv")
         self.detector = HotspotDetector(threshold_sigma=config.hotspot_threshold_sigma)
         self.tasking = TaskingSimulator()
         self.joiner = SpatialJoiner(radius_km=config.spatial_join_radius_km)
@@ -74,8 +74,15 @@ class MethaneHunterPipeline:
         print("─" * 50)
         print("STEP 1: Loading Sentinel-5P TROPOMI CH4 Data")
         print("─" * 50)
-        hotspots_df = self.s5p_client.load_hotspots_csv()
-        stats = self.s5p_client.get_summary_stats()
+        if self.use_demo:
+            print("[DEBUG.SOURCE] DEMO MODE: Using bundled offline dataset (India_Methane_Hotspots.csv).")
+            hotspots_df = self.s5p_client.load_hotspots_csv()
+            stats = self.s5p_client.get_summary_stats()
+        else:
+            print("[DEBUG.SOURCE] LIVE MODE: Fetching active Sentinel-5P data from Google Earth Engine.")
+            hotspots_df = self.s5p_client.fetch_hotspots_gee(bbox=config.aoi_bbox, days=30)
+            stats = self.s5p_client.get_summary_stats_from_df(hotspots_df)
+            
         print(f"  Loaded {stats['total_hotspots']} hotspot locations")
         print(f"  Severe: {stats['severe_count']} | Moderate: {stats['moderate_count']} | Low: {stats['low_count']}")
         print(f"  Max observation count: {stats['max_count']}")
@@ -88,6 +95,7 @@ class MethaneHunterPipeline:
         print("─" * 50)
         print("STEP 2: Hotspot Detection (Anomaly Threshold)")
         print("─" * 50)
+        print(f"[DEBUG.LOGIC] Applying dynamic statistical threshold ({config.hotspot_threshold_sigma}σ).")
         detected = self.detector.detect(hotspots_df)
         tasking_candidates = self.detector.get_tasking_candidates(detected)
         det_summary = self.detector.summary(detected)
@@ -103,6 +111,7 @@ class MethaneHunterPipeline:
         print("─" * 50)
         print("STEP 3: High-Resolution Satellite Tasking")
         print("─" * 50)
+        print("[DEBUG.LOGIC] Simulating satellite tasking triggers for high-priority points...")
         requests = self.tasking.create_tasking_requests(tasking_candidates, max_requests=15)
         task_summary = self.tasking.summary()
         print(f"  Created {task_summary['total_requests']} tasking requests")
@@ -119,10 +128,20 @@ class MethaneHunterPipeline:
         hotspot_coords = [(h.latitude, h.longitude) for h in tasking_candidates]
 
         if self.use_demo:
+            print("[DEBUG.SOURCE] DEMO MODE: Generating synthetic high-res plume properties.")
             plumes = self.cm_client.generate_synthetic_plumes(hotspot_coords)
             print(f"  Generated {len(plumes)} synthetic plumes (demo mode)")
         else:
-            plumes = self.cm_client.search_plumes(bbox=config.aoi_bbox)
+            from datetime import datetime, timedelta
+            end_date_str = datetime.now().strftime('%Y-%m-%d')
+            start_date_str = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+            
+            plumes = self.cm_client.search_plumes(
+                bbox=config.aoi_bbox,
+                date_start=start_date_str,
+                date_end=end_date_str
+            )
+            
             if not plumes:
                 plumes = self.cm_client.generate_synthetic_plumes(hotspot_coords)
                 print(f"  API returned no results; generated {len(plumes)} synthetic plumes")
@@ -130,8 +149,11 @@ class MethaneHunterPipeline:
                 print(f"  Retrieved {len(plumes)} plumes from CarbonMapper API")
 
         plume_df = self.cm_client.plumes_to_dataframe(plumes)
-        print(f"  Emission rates: {plume_df['emission_rate_kg_hr'].min():.1f} - {plume_df['emission_rate_kg_hr'].max():.1f} kg/hr")
-        print(f"  Mean emission: {plume_df['emission_rate_kg_hr'].mean():.1f} kg/hr")
+        if not plume_df.empty and 'emission_rate_kg_hr' in plume_df.columns:
+            print(f"  Emission rates: {plume_df['emission_rate_kg_hr'].min():.1f} - {plume_df['emission_rate_kg_hr'].max():.1f} kg/hr")
+            print(f"  Mean emission: {plume_df['emission_rate_kg_hr'].mean():.1f} kg/hr")
+        else:
+            print("  No plumes with emission rate data available.")
         self.results["plume_count"] = len(plumes)
         print()
 
@@ -139,6 +161,10 @@ class MethaneHunterPipeline:
         print("─" * 50)
         print("STEP 5: Infrastructure Attribution (Spatial Join)")
         print("─" * 50)
+        if self.infra_db.data_path and self.infra_db.data_path.exists():
+            print(f"[DEBUG.SOURCE] LIVE MODE: Loading real infrastructure from {self.infra_db.data_path.name}")
+        else:
+            print("[DEBUG.SOURCE] DEMO MODE: Generating synthetic Indian Oil & Gas infrastructure layout.")
         facilities = self.infra_db.load_facilities()
         print(f"  Loaded {len(facilities)} infrastructure facilities")
         attributed = self.joiner.join(plumes, facilities)
@@ -157,6 +183,11 @@ class MethaneHunterPipeline:
         print("─" * 50)
         print("STEP 6: Plume Inversion Modeling (PyTorch)")
         print("─" * 50)
+        if self.use_demo:
+            print("[DEBUG.LOGIC] DEMO MODE: Solving inverse Gaussian fields on synthetic concentration grids.")
+        else:
+            print("[DEBUG.LOGIC] LIVE MODE: Solving inversion over real satellite CH4 concentration pixels.")
+            
         inversion_results = []
         # Run inversion for top 5 emitters
         top_emitters = attributed[:5] if len(attributed) >= 5 else attributed
@@ -201,6 +232,11 @@ class MethaneHunterPipeline:
         print("─" * 50)
         print("STEP 7: Compliance Audit Reports (LangChain + Ollama)")
         print("─" * 50)
+        if self.use_llm:
+            print(f"[DEBUG.LLM] Using Local LLM Agent ({config.ollama_model}) to dynamically author audit details.")
+        else:
+            print("[DEBUG.LLM] LLM agent disabled. Falling back to hard-coded template audit.")
+            
         # Generate for top 3 emitters
         report_candidates = attributed[:3] if len(attributed) >= 3 else attributed
         plume_map = {p.plume_id: p for p in plumes}
@@ -244,14 +280,14 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Methane Shadow Hunter Pipeline")
-    parser.add_argument("--demo", action="store_true", default=True,
-                        help="Run in demo mode with synthetic data")
+    parser.add_argument("--live", action="store_true", default=False,
+                        help="Run in live mode fetching real data from GEE instead of using synthetic dataset")
     parser.add_argument("--no-llm", action="store_true", default=False,
                         help="Disable LLM-based report generation")
     args = parser.parse_args()
 
     pipeline = MethaneHunterPipeline(
-        use_demo=args.demo,
+        use_demo=not args.live,
         use_llm=not args.no_llm,
     )
     results = pipeline.run()

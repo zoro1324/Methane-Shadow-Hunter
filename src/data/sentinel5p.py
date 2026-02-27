@@ -11,6 +11,8 @@ import pandas as pd
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional
+from datetime import datetime
+import ee
 
 try:
     import rasterio
@@ -53,6 +55,129 @@ class Sentinel5PClient:
             from src.config import config
             dataset_dir = config.dataset_dir
         self.dataset_dir = Path(dataset_dir)
+        self._gee_initialized = False
+
+    # ------------------------------------------------------------------
+    # GEE live dataset loading
+    # ------------------------------------------------------------------
+
+    def initialize_gee(self):
+        """Initialize Google Earth Engine."""
+        if not self._gee_initialized:
+            try:
+                ee.Initialize(project='ardent-fusion-445310-r2')
+            except Exception as e:
+                print("Earth Engine not authenticated. Initiating authentication...")
+                ee.Authenticate()
+                ee.Initialize(project='ardent-fusion-445310-r2')
+            self._gee_initialized = True
+
+    def fetch_hotspots_gee(self, bbox: tuple, days: int = 30) -> pd.DataFrame:
+        """Fetch real-time Sentinel-5P CH4 anomalous pixels from GEE."""
+        self.initialize_gee()
+        
+        endDate = ee.Date(datetime.now().strftime('%Y-%m-%d'))
+        startDate = endDate.advance(-days, 'day')
+        
+        region = ee.Geometry.BBox(*bbox)
+        
+        collection = (ee.ImageCollection('COPERNICUS/S5P/OFFL/L3_CH4')
+                      .filterDate(startDate, endDate)
+                      .filterBounds(region)
+                      .select('CH4_column_volume_mixing_ratio_dry_air'))
+        
+        # Calculate mean CH4 over the period
+        mean_img = collection.mean().clip(region)
+        
+        # Calculate region stats to find anomaly threshold
+        stats = mean_img.reduceRegion(
+            reducer=ee.Reducer.mean().combine(ee.Reducer.stdDev(), sharedInputs=True),
+            geometry=region,
+            scale=10000,
+            maxPixels=1e9
+        ).getInfo()
+        
+        ch4_mean = stats.get('CH4_column_volume_mixing_ratio_dry_air_mean')
+        ch4_std = stats.get('CH4_column_volume_mixing_ratio_dry_air_stdDev')
+        
+        if ch4_mean is None or ch4_std is None:
+            print("[WARNING] Could not compute stats from GEE, falling back to empty DataFrame.")
+            return pd.DataFrame(columns=['longitude', 'latitude', 'count', 'severity'])
+            
+        # Use the configured threshold (minus a small margin so HotspotDetector has a distribution to evaluate)
+        from src.config import config
+        target_sigma = max(0.0, config.hotspot_threshold_sigma - 0.5)
+        
+        # Find pixels > mean + sigma
+        threshold = ch4_mean + target_sigma * ch4_std
+        anomalies = mean_img.updateMask(mean_img.gt(threshold))
+        
+        # Sample points from the anomalies
+        points = anomalies.sample(
+            region=region,
+            scale=10000,
+            numPixels=500, # Max points to sample as hotspots
+            geometries=True
+        ).getInfo()
+        
+        features = points.get('features', [])
+        
+        data = []
+        for f in features:
+            coords = f['geometry']['coordinates']
+            val = f['properties'].get('CH4_column_volume_mixing_ratio_dry_air', 0)
+            
+            # Synthesize a 'count' metric since GEE just gives concentration.
+            # Convert the standard deviation deviation back into a synthetic count to match offline logic
+            sigma_val = (val - ch4_mean) / ch4_std if ch4_std > 0 else 0
+            
+            # Map sigma (typically 2 to 5) to a count range ~ 50 to 150
+            synthesized_count = int(max(10, min(200, sigma_val * 30)))
+            
+            if synthesized_count > 120: 
+                sev = "Severe"
+            elif synthesized_count > 60:
+                sev = "Moderate"
+            else:
+                sev = "Low"
+                
+            data.append({
+                'longitude': coords[0],
+                'latitude': coords[1],
+                'count': synthesized_count,
+                'severity': sev,
+                'ch4_val': val
+            })
+            
+        df = pd.DataFrame(data)
+        if df.empty:
+            return pd.DataFrame(columns=['longitude', 'latitude', 'count', 'severity'])
+        return df
+        
+    def get_summary_stats_from_df(self, df: pd.DataFrame) -> dict:
+        """Return summary statistics directly from a DataFrame."""
+        if df.empty:
+            return {
+                "total_hotspots": 0,
+                "severe_count": 0,
+                "moderate_count": 0,
+                "low_count": 0,
+                "max_count": 0,
+                "mean_count": 0.0,
+                "lon_range": (0.0, 0.0),
+                "lat_range": (0.0, 0.0),
+            }
+            
+        return {
+            "total_hotspots": len(df),
+            "severe_count": int((df["severity"] == "Severe").sum()),
+            "moderate_count": int((df["severity"] == "Moderate").sum()),
+            "low_count": int((df["severity"] == "Low").sum()),
+            "max_count": int(df["count"].max()),
+            "mean_count": round(df["count"].mean(), 2),
+            "lon_range": (df["longitude"].min(), df["longitude"].max()),
+            "lat_range": (df["latitude"].min(), df["latitude"].max()),
+        }
 
     # ------------------------------------------------------------------
     # Local dataset loading
