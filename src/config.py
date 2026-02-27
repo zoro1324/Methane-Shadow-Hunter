@@ -8,9 +8,9 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
-# Load .env from project root
+# Load .env from src directory
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(PROJECT_ROOT / ".env")
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 DATASET_DIR = PROJECT_ROOT / "models" / "dataset"
 

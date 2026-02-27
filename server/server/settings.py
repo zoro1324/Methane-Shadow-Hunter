@@ -18,8 +18,8 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent.parent
 PROJECT_ROOT = BASE_DIR.parent  # d:\Methane-Shadow-Hunter
 
-# Load .env from project root
-load_dotenv(PROJECT_ROOT / ".env")
+# Load .env from server directory
+load_dotenv(BASE_DIR / ".env")
 
 
 # Quick-start development settings - unsuitable for production

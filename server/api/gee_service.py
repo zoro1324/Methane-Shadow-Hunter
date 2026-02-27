@@ -13,8 +13,8 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
-# Load .env from project root (two levels up from this file)
-load_dotenv(Path(__file__).resolve().parents[3] / ".env")
+# Load .env from server directory
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 # ─── Config read from .env ────────────────────────────────────────────────
 
