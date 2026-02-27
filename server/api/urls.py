@@ -27,6 +27,7 @@ urlpatterns = [
 
     # Dashboard
     path('dashboard/summary/', views.DashboardSummaryView.as_view(), name='dashboard-summary'),
+    path('dashboard/trend/', views.DashboardTrendView.as_view(), name='dashboard-trend'),
 
     # GeoJSON export endpoints (for map rendering)
     path('geojson/facilities/', views.facilities_geojson, name='geojson-facilities'),

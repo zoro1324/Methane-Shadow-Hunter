@@ -117,7 +117,11 @@ export const EmissionTrendChart = ({ data }) => {
 /**
  * Regional Distribution Chart - Bar Chart
  */
-export const RegionalDistributionChart = ({ data }) => {
+export const RegionalDistributionChart = ({
+  data,
+  title = 'Leak Distribution by Region',
+  subtitle = 'Number of detected leaks per region',
+}) => {
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -126,8 +130,8 @@ export const RegionalDistributionChart = ({ data }) => {
       className="chart-container"
     >
       <div className="mb-6">
-        <h3 className="text-lg font-semibold text-white">Leak Distribution by Region</h3>
-        <p className="text-sm text-gray-400">Number of detected leaks per region</p>
+        <h3 className="text-lg font-semibold text-white">{title}</h3>
+        <p className="text-sm text-gray-400">{subtitle}</p>
       </div>
       
       <ResponsiveContainer width="100%" height={300}>
