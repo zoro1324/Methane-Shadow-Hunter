@@ -168,6 +168,9 @@ class DashboardSummarySerializer(serializers.Serializer):
     recent_reports = AuditReportListSerializer(many=True)
     facility_type_distribution = serializers.DictField()
     operator_distribution = serializers.DictField()
+    severity_distribution = serializers.DictField()
+    total_tasking_requests = serializers.IntegerField()
+    last_pipeline_run = serializers.DictField(allow_null=True)
 
 
 class PipelineTriggerSerializer(serializers.Serializer):

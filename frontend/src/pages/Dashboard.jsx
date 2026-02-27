@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import {
   Flame,
@@ -6,11 +7,11 @@ import {
   MapPin,
   Satellite,
   AlertTriangle,
-  Clock,
   Activity,
   Globe,
   TrendingUp,
   RefreshCw,
+  Radio,
 } from 'lucide-react'
 import StatCard from '../components/cards/StatCard'
 import {
@@ -20,17 +21,16 @@ import {
 } from '../components/charts/Charts'
 import { StatusBadge } from '../components/ui/AlertCard'
 import { Spinner } from '../components/ui/Common'
-import { dashboardService, detectedHotspotsService, attributionsService, reportsService, facilitiesService } from '../services/api'
+import { dashboardService } from '../services/api'
 
 /**
  * Dashboard Overview Page
  * Main analytics dashboard with stats, charts, and recent activity
+ * All data sourced from Django REST Framework backend.
  */
 const Dashboard = () => {
   const [summary, setSummary] = useState(null)
-  const [detectedHotspots, setDetectedHotspots] = useState([])
-  const [attributions, setAttributions] = useState([])
-  const [reports, setReports] = useState([])
+  const [trend, setTrend] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
@@ -38,16 +38,12 @@ const Dashboard = () => {
     setLoading(true)
     setError(null)
     try {
-      const [summaryData, hotspotsData, attrData, reportsData] = await Promise.all([
+      const [summaryData, trendData] = await Promise.all([
         dashboardService.getSummary(),
-        detectedHotspotsService.getAll({ ordering: '-anomaly_score' }),
-        attributionsService.getAll({ ordering: '-emission_rate_kg_hr' }),
-        reportsService.getAll({ ordering: '-generated_at' }),
+        dashboardService.getTrend(),
       ])
       setSummary(summaryData)
-      setDetectedHotspots(Array.isArray(hotspotsData) ? hotspotsData : [])
-      setAttributions(Array.isArray(attrData) ? attrData : [])
-      setReports(Array.isArray(reportsData) ? reportsData : [])
+      setTrend(Array.isArray(trendData) ? trendData : [])
     } catch (err) {
       console.error('Dashboard fetch error:', err)
       setError('Failed to load dashboard data. Is the backend running?')
@@ -58,41 +54,36 @@ const Dashboard = () => {
 
   useEffect(() => { fetchDashboardData() }, [])
 
-  // Derived data for charts
-  const severityDistribution = detectedHotspots.length
-    ? (() => {
-        const counts = { Critical: 0, High: 0, Medium: 0, Low: 0 }
-        detectedHotspots.forEach((h) => {
-          const s = h.severity || 'Low'
-          const key = s.charAt(0).toUpperCase() + s.slice(1).toLowerCase()
-          if (counts[key] !== undefined) counts[key]++
-        })
-        return [
-          { name: 'Critical', value: counts.Critical, color: '#ef4444' },
-          { name: 'High', value: counts.High, color: '#f97316' },
-          { name: 'Medium', value: counts.Medium, color: '#eab308' },
-          { name: 'Low', value: counts.Low, color: '#22c55e' },
-        ]
-      })()
-    : [
-        { name: 'Critical', value: 0, color: '#ef4444' },
-        { name: 'High', value: 0, color: '#f97316' },
-        { name: 'Medium', value: 0, color: '#eab308' },
-        { name: 'Low', value: 0, color: '#22c55e' },
-      ]
+  // Severity distribution from backend summary counts
+  const severityDistribution = (() => {
+    const dist = summary?.severity_distribution || {}
+    const normalize = (key) => {
+      // Backend field is a free-form CharField; try case-insensitive match
+      const found = Object.keys(dist).find(
+        (k) => k.toLowerCase() === key.toLowerCase()
+      )
+      return found ? (dist[found] || 0) : 0
+    }
+    return [
+      { name: 'Critical', value: normalize('Critical'), color: '#ef4444' },
+      { name: 'High',     value: normalize('High'),     color: '#f97316' },
+      { name: 'Medium',   value: normalize('Medium'),   color: '#eab308' },
+      { name: 'Low',      value: normalize('Low'),      color: '#22c55e' },
+    ]
+  })()
 
-  // Build regional distribution from facility type distribution
-  const regionalDistribution = summary?.facility_type_distribution
+  // Facility type distribution → bar chart
+  const facilityTypeDistribution = summary?.facility_type_distribution
     ? Object.entries(summary.facility_type_distribution).map(([region, leaks]) => ({
         region,
         leaks,
       }))
     : []
 
-  // Top emitters as "super emitters" for the sidebar list
+  // Top emitting facilities (already ordered by emission on backend)
   const recentEmitters = (summary?.top_emitters || []).slice(0, 5)
 
-  // Recent reports
+  // Recent reports (last 3 from summary)
   const recentReports = (summary?.recent_reports || []).slice(0, 3)
 
   if (loading) {
@@ -182,13 +173,31 @@ const Dashboard = () => {
         />
       </div>
 
-      {/* Charts Row */}
+      {/* Charts Row - Emission Trend full-width */}
+      <div className="grid grid-cols-1 gap-6">
+        {trend.length > 0 ? (
+          <EmissionTrendChart data={trend} />
+        ) : (
+          <div className="chart-container flex items-center justify-center h-[320px]">
+            <div className="text-center">
+              <Radio className="w-8 h-8 text-gray-600 mx-auto mb-2" />
+              <p className="text-gray-500 text-sm">No emission trend data yet – run the pipeline first.</p>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Charts Row - Facility Type + Severity */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {regionalDistribution.length > 0 ? (
-          <RegionalDistributionChart data={regionalDistribution} />
+        {facilityTypeDistribution.length > 0 ? (
+          <RegionalDistributionChart
+            data={facilityTypeDistribution}
+            title="Facility Distribution by Type"
+            subtitle="Number of facilities per infrastructure type"
+          />
         ) : (
           <div className="chart-container flex items-center justify-center h-[380px]">
-            <p className="text-gray-500">No facility data available yet. Run the pipeline first.</p>
+            <p className="text-gray-500 text-sm">No facility data available yet. Run the pipeline first.</p>
           </div>
         )}
         <SeverityDistributionChart data={severityDistribution} />
@@ -209,12 +218,12 @@ const Dashboard = () => {
                 <AlertTriangle className="w-5 h-5 text-danger-red" />
                 <h3 className="font-semibold text-white">Top Emitting Facilities</h3>
               </div>
-              <a
-                href="/dashboard/super-emitters"
+              <Link
+                to="/dashboard/super-emitters"
                 className="text-sm text-accent-green hover:underline"
               >
                 View All
-              </a>
+              </Link>
             </div>
           </div>
           <div className="divide-y divide-dark-border/50">
@@ -257,12 +266,12 @@ const Dashboard = () => {
                 <Activity className="w-5 h-5 text-accent-green" />
                 <h3 className="font-semibold text-white">Recent Reports</h3>
               </div>
-              <a
-                href="/dashboard/reports"
+              <Link
+                to="/dashboard/reports"
                 className="text-sm text-accent-green hover:underline"
               >
                 View All
-              </a>
+              </Link>
             </div>
           </div>
           <div className="divide-y divide-dark-border/50">
@@ -274,9 +283,9 @@ const Dashboard = () => {
                 <div className="flex items-start gap-3">
                   <div
                     className={`w-2 h-2 mt-2 rounded-full flex-shrink-0 ${
-                      report.risk_level === 'critical'
+                      report.risk_level?.toUpperCase() === 'CRITICAL'
                         ? 'bg-danger-red'
-                        : report.risk_level === 'high'
+                        : report.risk_level?.toUpperCase() === 'HIGH'
                         ? 'bg-warning-yellow'
                         : 'bg-info-blue'
                     }`}
@@ -337,11 +346,11 @@ const Dashboard = () => {
           </div>
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-lg bg-warning-yellow/20 flex items-center justify-center">
-              <Clock className="w-5 h-5 text-warning-yellow" />
+              <Radio className="w-5 h-5 text-warning-yellow" />
             </div>
             <div>
-              <p className="text-xs text-gray-500">High Confidence</p>
-              <p className="text-lg font-semibold text-white">{summary?.high_confidence_attributions || 0}</p>
+              <p className="text-xs text-gray-500">Tasking Requests</p>
+              <p className="text-lg font-semibold text-white">{summary?.total_tasking_requests || 0}</p>
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -349,8 +358,8 @@ const Dashboard = () => {
               <Globe className="w-5 h-5 text-purple-400" />
             </div>
             <div>
-              <p className="text-xs text-gray-500">Coverage Area</p>
-              <p className="text-lg font-semibold text-white">India</p>
+              <p className="text-xs text-gray-500">Pipeline Runs</p>
+              <p className="text-lg font-semibold text-white">{summary?.total_pipeline_runs || 0}</p>
             </div>
           </div>
         </div>

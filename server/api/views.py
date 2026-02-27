@@ -524,6 +524,19 @@ class DashboardSummaryView(APIView):
 
         # Pipeline runs
         total_runs = PipelineRun.objects.count()
+        last_run = PipelineRun.objects.order_by('-started_at').first()
+
+        # Tasking requests
+        total_tasking = TaskingRequest.objects.count()
+
+        # Severity breakdown derived from consistent priority field
+        # priority 1=Critical, 2=High, 3=Moderate
+        severity_dist = {
+            'Critical': DetectedHotspot.objects.filter(priority=1).count(),
+            'High':     DetectedHotspot.objects.filter(priority=2).count(),
+            'Medium':   DetectedHotspot.objects.filter(priority=3).count(),
+            'Low':      0,  # reserved for future lower-priority tier
+        }
 
         return Response({
             'total_facilities': total_facilities,
@@ -533,13 +546,80 @@ class DashboardSummaryView(APIView):
             'total_attributions': total_attributions,
             'total_reports': total_reports,
             'total_pipeline_runs': total_runs,
+            'total_tasking_requests': total_tasking,
             'critical_hotspots': critical_hotspots,
             'high_confidence_attributions': high_conf,
             'top_emitters': FacilityListSerializer(top_emitters, many=True).data,
             'recent_reports': AuditReportListSerializer(recent_reports, many=True).data,
             'facility_type_distribution': type_dist,
             'operator_distribution': operator_dist,
+            'severity_distribution': severity_dist,
+            'last_pipeline_run': {
+                'id': last_run.pk,
+                'status': last_run.status,
+                'started_at': last_run.started_at.isoformat(),
+                'completed_at': last_run.completed_at.isoformat() if last_run.completed_at else None,
+            } if last_run else None,
         })
+
+
+# ─── Dashboard Trend ─────────────────────────────────────────────────────
+
+class DashboardTrendView(APIView):
+    """
+    GET /api/dashboard/trend/
+
+    Returns last-12-months monthly emission and detection counts.
+    """
+
+    def get(self, request):
+        from datetime import timedelta
+        from django.db.models.functions import TruncMonth
+
+        now = timezone.now()
+        start = now - timedelta(days=365)
+
+        # Monthly total attributed emissions (kg/hr sum) and attribution count
+        monthly_emissions = (
+            AttributedEmission.objects
+            .filter(attributed_at__gte=start)
+            .annotate(month=TruncMonth('attributed_at'))
+            .values('month')
+            .annotate(total=Sum('emission_rate_kg_hr'), count=Count('id'))
+            .order_by('month')
+        )
+
+        # Monthly detected hotspot counts
+        monthly_hotspots = (
+            DetectedHotspot.objects
+            .filter(detected_at__gte=start)
+            .annotate(month=TruncMonth('detected_at'))
+            .values('month')
+            .annotate(count=Count('id'))
+            .order_by('month')
+        )
+
+        emission_map = {
+            row['month'].strftime('%Y-%m'): row
+            for row in monthly_emissions
+        }
+        hotspot_map = {
+            row['month'].strftime('%Y-%m'): row['count']
+            for row in monthly_hotspots
+        }
+
+        all_months = sorted(set(emission_map.keys()) | set(hotspot_map.keys()))
+
+        result = []
+        for key in all_months:
+            e = emission_map.get(key, {})
+            result.append({
+                'month': datetime.strptime(key, '%Y-%m').strftime('%b %Y'),
+                'emissions': round(float(e.get('total') or 0), 2),
+                'detected': hotspot_map.get(key, 0),
+            })
+
+        return Response(result)
 
 
 # ─── GeoJSON Export Endpoints ─────────────────────────────────────────────

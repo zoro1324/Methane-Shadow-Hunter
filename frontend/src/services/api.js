@@ -46,6 +46,10 @@ export const dashboardService = {
     const res = await apiClient.get('/dashboard/summary/')
     return res.data
   },
+  getTrend: async () => {
+    const res = await apiClient.get('/dashboard/trend/')
+    return res.data
+  },
 }
 
 // ─── Facilities ──────────────────────────────────────────────────────────
