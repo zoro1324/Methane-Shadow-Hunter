@@ -741,7 +741,7 @@ def _run_pipeline_background(run_pk, mode, use_llm):
             print(_inf("Generating reports for top 3 attributed emitters …"))
             try:
                 from src.agent.reporting_agent import ComplianceAuditAgent
-                agent          = ComplianceAuditAgent(model=config.featherless_model, api_key=config.featherless_api_key, base_url=config.featherless_base_url)
+                agent          = ComplianceAuditAgent(model=config.ollama_model, base_url=config.ollama_base_url)
                 top_for_report = sorted(attributions, key=lambda a: a.emission_rate_kg_hr, reverse=True)[:3]
                 plume_map      = {p.plume_id: p for p in plumes}
                 reports        = agent.generate_batch_reports(top_for_report, plume_map)
