@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Bell,
@@ -11,18 +11,72 @@ import {
   Trash2,
   Settings,
   Clock,
+  RefreshCw,
 } from 'lucide-react'
 import { AlertCard } from '../components/ui/AlertCard'
-import { Button } from '../components/ui/Common'
-import { alerts as initialAlerts } from '../data/mockData'
+import { Button, Spinner } from '../components/ui/Common'
+import { detectedHotspotsService, reportsService } from '../services/api'
 
 /**
- * Alerts Page
- * Notification center for all system alerts and notifications
+ * Alerts Page – derived from detected hotspots + audit reports
  */
 const Alerts = () => {
-  const [alerts, setAlerts] = useState(initialAlerts)
-  const [filter, setFilter] = useState('all') // all, unread, critical, warning, info, success
+  const [alerts, setAlerts] = useState([])
+  const [filter, setFilter] = useState('all')
+  const [loading, setLoading] = useState(true)
+
+  const fetchAlerts = async () => {
+    setLoading(true)
+    try {
+      const [hotspots, reports] = await Promise.all([
+        detectedHotspotsService.getAll({ ordering: '-anomaly_score' }),
+        reportsService.getAll({ ordering: '-generated_at' }),
+      ])
+
+      const alertList = []
+      const hList = Array.isArray(hotspots) ? hotspots : []
+      const rList = Array.isArray(reports) ? reports : []
+
+      // Derive alerts from critical/high priority hotspots
+      hList.forEach((h, i) => {
+        const severity = (h.severity || 'medium').toLowerCase()
+        const typeMap = { critical: 'critical', high: 'warning', medium: 'info', low: 'info' }
+        alertList.push({
+          id: `HS-${h.id || i}`,
+          type: typeMap[severity] || 'info',
+          title: severity === 'critical' ? 'Critical Hotspot Detected' :
+                 severity === 'high' ? 'High-Priority Hotspot' :
+                 `Hotspot Detected (${severity})`,
+          message: `Anomaly score: ${h.anomaly_score?.toFixed(2) || 'N/A'}, CH₄ count: ${h.ch4_count || 'N/A'}${h.requires_highres ? ' – Requires high-res tasking' : ''}`,
+          location: h.hotspot_id || `Lat ${h.latitude?.toFixed(4)}, Lon ${h.longitude?.toFixed(4)}`,
+          timestamp: h.detected_at || new Date().toISOString(),
+          read: severity !== 'critical' && severity !== 'high',
+        })
+      })
+
+      // Derive alerts from audit reports
+      rList.slice(0, 5).forEach((r) => {
+        alertList.push({
+          id: `RPT-${r.id}`,
+          type: r.risk_level === 'critical' ? 'critical' : r.risk_level === 'high' ? 'warning' : 'success',
+          title: `Report Generated: ${r.report_id}`,
+          message: `Risk level: ${r.risk_level}${r.facility_name ? ` for ${r.facility_name}` : ''}`,
+          location: r.facility_name || 'N/A',
+          timestamp: r.generated_at || new Date().toISOString(),
+          read: true,
+        })
+      })
+
+      setAlerts(alertList)
+    } catch (err) {
+      console.error('Alerts fetch error:', err)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { fetchAlerts() }, [])
+
   const [selectedAlerts, setSelectedAlerts] = useState([])
 
   // Filter alerts based on selected filter
@@ -66,6 +120,14 @@ const Alerts = () => {
     { id: 'success', label: 'Resolved', icon: CheckCircle },
   ]
 
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-96">
+        <Spinner size="lg" className="text-accent-green" />
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-6">
       {/* Page Header */}
@@ -100,6 +162,9 @@ const Alerts = () => {
           </Button>
           <Button variant="outline" icon={Settings} size="sm">
             Settings
+          </Button>
+          <Button variant="outline" icon={RefreshCw} size="sm" onClick={fetchAlerts}>
+            Refresh
           </Button>
         </div>
       </div>

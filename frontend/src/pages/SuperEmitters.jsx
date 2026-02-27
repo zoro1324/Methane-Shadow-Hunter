@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import {
   AlertTriangle,
@@ -12,21 +12,54 @@ import {
 } from 'lucide-react'
 import DataTable from '../components/tables/DataTable'
 import { StatusBadge, RiskIndicator } from '../components/ui/AlertCard'
-import { Button, GlassCard, SectionHeader } from '../components/ui/Common'
-import { superEmitters } from '../data/mockData'
+import { Button, GlassCard, SectionHeader, Spinner } from '../components/ui/Common'
+import { detectedHotspotsService, attributionsService } from '../services/api'
 
 /**
- * Super Emitters Page
- * Table view of all detected super-emitter events
+ * Super Emitters Page – shows detected hotspots from the pipeline
  */
 const SuperEmitters = () => {
   const [selectedEmitter, setSelectedEmitter] = useState(null)
+  const [hotspots, setHotspots] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+
+  const fetchData = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const data = await detectedHotspotsService.getAll({ ordering: '-anomaly_score' })
+      // Transform backend data to match table expectations
+      const transformed = (Array.isArray(data) ? data : []).map((h, idx) => ({
+        id: h.hotspot_id || `DH-${String(idx + 1).padStart(3, '0')}`,
+        location: `Hotspot ${h.hotspot_id || idx + 1}`,
+        coordinates: { lat: h.latitude || 0, lng: h.longitude || 0 },
+        emissionRate: h.ch4_count || 0,
+        unit: 'ppb',
+        confidence: Math.round((h.anomaly_score || 0) * 100) / 100,
+        status: h.priority === 1 ? 'Active' : h.priority === 2 ? 'Investigating' : 'Resolved',
+        lastDetected: h.detected_at || new Date().toISOString(),
+        company: 'Unknown',
+        riskLevel: (h.severity || 'medium').charAt(0).toUpperCase() + (h.severity || 'medium').slice(1),
+        satellite: 'Sentinel-5P',
+        raw: h,
+      }))
+      setHotspots(transformed)
+    } catch (err) {
+      console.error('SuperEmitters fetch error:', err)
+      setError('Failed to load detected hotspots.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { fetchData() }, [])
 
   // Calculate stats
-  const activeCount = superEmitters.filter(e => e.status === 'Active').length
-  const investigatingCount = superEmitters.filter(e => e.status === 'Investigating').length
-  const resolvedCount = superEmitters.filter(e => e.status === 'Resolved').length
-  const totalEmissions = superEmitters.reduce((sum, e) => sum + e.emissionRate, 0)
+  const activeCount = hotspots.filter(e => e.status === 'Active').length
+  const investigatingCount = hotspots.filter(e => e.status === 'Investigating').length
+  const resolvedCount = hotspots.filter(e => e.status === 'Resolved').length
+  const totalEmissions = hotspots.reduce((sum, e) => sum + e.emissionRate, 0)
 
   // Table column configuration
   const columns = [
@@ -153,7 +186,7 @@ const SuperEmitters = () => {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <Button variant="outline" icon={RefreshCw} size="sm">
+          <Button variant="outline" icon={RefreshCw} size="sm" onClick={fetchData}>
             Refresh
           </Button>
           <Button variant="primary" icon={Download} size="sm">
@@ -233,13 +266,25 @@ const SuperEmitters = () => {
       </div>
 
       {/* Data Table */}
-      <DataTable
-        columns={columns}
-        data={superEmitters}
-        searchPlaceholder="Search by location, ID, or satellite..."
-        onRowClick={(row) => setSelectedEmitter(row)}
-        pageSize={8}
-      />
+      {loading ? (
+        <div className="flex items-center justify-center h-48">
+          <Spinner size="lg" className="text-accent-green" />
+        </div>
+      ) : error ? (
+        <div className="glass-card p-8 text-center">
+          <AlertTriangle className="w-10 h-10 text-warning-yellow mx-auto mb-3" />
+          <p className="text-gray-400">{error}</p>
+          <button onClick={fetchData} className="mt-3 text-accent-green hover:underline text-sm">Retry</button>
+        </div>
+      ) : (
+        <DataTable
+          columns={columns}
+          data={hotspots}
+          searchPlaceholder="Search by location, ID, or satellite..."
+          onRowClick={(row) => setSelectedEmitter(row)}
+          pageSize={8}
+        />
+      )}
 
       {/* Detail Modal/Drawer */}
       {selectedEmitter && (
