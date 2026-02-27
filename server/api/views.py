@@ -639,6 +639,52 @@ def attributions_geojson(request):
     })
 
 
+# ─── Google Earth Engine Endpoints ─────────────────────────────────────────
+
+@api_view(['GET'])
+def gee_ch4_tiles(request):
+    """
+    Return a GEE-generated tile URL for Sentinel-5P CH4 heatmap overlay.
+    Query params:
+        days  – number of days to average (default 30)
+    """
+    days = int(request.query_params.get('days', 30))
+
+    try:
+        from .gee_service import get_tile_url
+        result = get_tile_url(days=days)
+        return Response(result)
+    except Exception as e:
+        return Response(
+            {'error': str(e), 'detail': 'GEE tile generation failed. Check Earth Engine authentication.'},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+
+@api_view(['GET'])
+def gee_ch4_heatmap(request):
+    """
+    Return sampled CH4 points as [lat, lng, intensity] for leaflet.heat.
+    Query params:
+        days       – number of days to average (default 30)
+        num_points – max sample points (default 1000)
+        scale      – sampling resolution in metres (default 20000)
+    """
+    days = int(request.query_params.get('days', 30))
+    num_points = int(request.query_params.get('num_points', 1000))
+    scale = int(request.query_params.get('scale', 20000))
+
+    try:
+        from .gee_service import get_heatmap_points
+        result = get_heatmap_points(days=days, num_points=num_points, scale=scale)
+        return Response(result)
+    except Exception as e:
+        return Response(
+            {'error': str(e), 'detail': 'GEE heatmap query failed. Check Earth Engine authentication.'},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+
 # ─── Helper functions ─────────────────────────────────────────────────────
 
 def _haversine(lat1, lon1, lat2, lon2):
