@@ -8,10 +8,35 @@ Provides Sentinel-5P TROPOMI CH4 data as:
 
 import os
 import ee
+import logging
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
+
+# Default timeout (seconds) for any blocking GEE .getInfo() call
+# Must be LESS than the frontend axios timeout (12 s) so Django returns
+# a proper 503 before the client disconnects (which causes Broken pipe).
+GEE_CALL_TIMEOUT = int(os.getenv('GEE_CALL_TIMEOUT', '10'))
+
+
+def _run_with_timeout(fn, timeout=GEE_CALL_TIMEOUT):
+    """
+    Run ``fn()`` in a thread.  Raises ``TimeoutError`` if it doesn't finish
+    within ``timeout`` seconds, or re-raises any exception from ``fn``.
+    """
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(fn)
+        try:
+            return future.result(timeout=timeout)
+        except FuturesTimeoutError:
+            raise TimeoutError(
+                f'GEE call timed out after {timeout}s.'
+                ' Check Earth Engine authentication and network connectivity.'
+            )
 
 # Load .env from server directory
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
@@ -161,13 +186,28 @@ def get_heatmap_points(
         scale = DEFAULT_HEATMAP_SCALE
     image, region = _get_ch4_image(days, bbox)
 
-    # Sample points from the image
-    samples = image.sample(
-        region=region,
-        scale=scale,
-        numPixels=num_points,
-        geometries=True,
-    ).getInfo()
+    # Sample points from the image — wrapped in a timeout so the server
+    # never hangs indefinitely when GEE is slow or unreachable.
+    logger.debug(
+        '[GEE] Sampling CH4 heatmap: days=%s, num_points=%s, scale=%s',
+        days, num_points, scale,
+    )
+    try:
+        samples = _run_with_timeout(
+            lambda: image.sample(
+                region=region,
+                scale=scale,
+                numPixels=num_points,
+                geometries=True,
+            ).getInfo()
+        )
+    except TimeoutError as exc:
+        logger.warning('[GEE] Heatmap sample timed out: %s', exc)
+        raise
+    except Exception as exc:
+        logger.warning('[GEE] Heatmap sample failed: %s', exc)
+        raise
+    logger.debug('[GEE] Sample succeeded, got %d features', len(samples.get('features', [])))
 
     features = samples.get("features", [])
     if not features:
@@ -210,4 +250,381 @@ def get_heatmap_points(
         },
         "start_date": start_date.strftime("%Y-%m-%d"),
         "end_date": end_date.strftime("%Y-%m-%d"),
+    }
+
+
+def get_hotspots_by_dates(
+    start_date: str,
+    end_date: str,
+    bbox: tuple = DEFAULT_BBOX,
+    num_points: int = None,
+    scale: int = None,
+) -> dict:
+    """
+    Detect CH4 anomaly hotspots for an explicit date range using Sentinel-5P TROPOMI.
+
+    Algorithm:
+      1. Build a mean CH4 image for [start_date, end_date].
+      2. Sample `num_points` evenly across the AOI.
+      3. Compute z-score = (value - mean) / std for each sample.
+      4. Keep only points with z >= 0.5 (above-average CH4).
+      5. Classify into Severe / Moderate / Low by z-score thresholds.
+      6. Return hotspot list + global stats + tile URL for map overlay.
+
+    Args:
+        start_date:  ISO date string 'YYYY-MM-DD'.
+        end_date:    ISO date string 'YYYY-MM-DD'.
+        bbox:        (min_lon, min_lat, max_lon, max_lat).
+        num_points:  Max sample points (default DEFAULT_HEATMAP_NUM_POINTS).
+        scale:       Sampling resolution in metres (default DEFAULT_HEATMAP_SCALE).
+
+    Returns:
+        {
+            "hotspots": [ { id, latitude, longitude, ch4_ppb, anomaly_score, severity, priority, detected_at }, ... ],
+            "stats": { mean, std, min, max, count, total_sampled },
+            "tile_url": "https://earthengine.googleapis.com/...",  # or None
+            "start_date": "YYYY-MM-DD",
+            "end_date":   "YYYY-MM-DD",
+        }
+    """
+    if num_points is None:
+        num_points = DEFAULT_HEATMAP_NUM_POINTS
+    if scale is None:
+        scale = DEFAULT_HEATMAP_SCALE
+
+    _ensure_init()
+
+    region = ee.Geometry.BBox(*bbox)
+
+    image = (
+        ee.ImageCollection("COPERNICUS/S5P/OFFL/L3_CH4")
+        .filterDate(start_date, end_date)
+        .filterBounds(region)
+        .select("CH4_column_volume_mixing_ratio_dry_air")
+        .mean()
+        .clip(region)
+    )
+
+    # Sample points uniformly across the region — with timeout
+    logger.debug(
+        '[GEE] Sampling hotspots by dates: %s → %s, num_points=%s, scale=%s',
+        start_date, end_date, num_points, scale,
+    )
+    try:
+        samples = _run_with_timeout(
+            lambda: image.sample(
+                region=region,
+                scale=scale,
+                numPixels=num_points,
+                geometries=True,
+            ).getInfo()
+        )
+    except TimeoutError as exc:
+        logger.warning('[GEE] Hotspots-by-dates timed out: %s', exc)
+        raise
+    except Exception as exc:
+        logger.warning('[GEE] Hotspots-by-dates failed: %s', exc)
+        raise
+
+    features = samples.get("features", [])
+    if not features:
+        return {
+            "hotspots": [],
+            "stats": {},
+            "tile_url": None,
+            "start_date": start_date,
+            "end_date": end_date,
+        }
+
+    raw_points = []
+    values = []
+    for f in features:
+        coords = f["geometry"]["coordinates"]
+        val = f["properties"].get("CH4_column_volume_mixing_ratio_dry_air")
+        if val is not None:
+            raw_points.append([coords[1], coords[0], float(val)])  # [lat, lng, ppb]
+            values.append(float(val))
+
+    if not values:
+        return {
+            "hotspots": [],
+            "stats": {},
+            "tile_url": None,
+            "start_date": start_date,
+            "end_date": end_date,
+        }
+
+    values_arr = np.array(values)
+    v_mean = float(np.nanmean(values_arr))
+    v_std  = float(np.nanstd(values_arr)) or 1.0
+    v_min  = float(np.nanmin(values_arr))
+    v_max  = float(np.nanmax(values_arr))
+
+    total_sampled = len(values)
+
+    hotspots = []
+    for i, (lat, lng, ch4) in enumerate(raw_points):
+        z = (ch4 - v_mean) / v_std
+        if z < 0.5:
+            continue  # skip near-average and below-average points
+
+        # Severity classification by z-score
+        if z >= 3.0:
+            severity, priority = "Severe",   1
+        elif z >= 2.0:
+            severity, priority = "Moderate", 2
+        else:
+            severity, priority = "Low",      3
+
+        hotspots.append({
+            "id":            f"GEE-{i + 1:04d}",
+            "latitude":      round(lat, 5),
+            "longitude":     round(lng, 5),
+            "ch4_ppb":       round(ch4, 2),
+            "anomaly_score": round(z, 4),
+            "severity":      severity,
+            "priority":      priority,
+            "detected_at":   end_date,
+        })
+
+    # Sort by anomaly score descending (most anomalous first)
+    hotspots.sort(key=lambda x: x["anomaly_score"], reverse=True)
+
+    # Get tile URL for Leaflet overlay
+    tile_url = None
+    try:
+        vis_params = {
+            "min":     CH4_VIS_PARAMS["min"],
+            "max":     CH4_VIS_PARAMS["max"],
+            "palette": CH4_VIS_PARAMS["palette"],
+        }
+        map_id_dict = image.getMapId(vis_params)
+        tile_url = map_id_dict["tile_fetcher"].url_format
+    except Exception:
+        pass  # tile URL is optional — page still works without it
+
+    return {
+        "hotspots": hotspots,
+        "stats": {
+            "mean":          round(v_mean, 2),
+            "std":           round(v_std, 2),
+            "min":           round(v_min, 2),
+            "max":           round(v_max, 2),
+            "count":         len(hotspots),
+            "total_sampled": total_sampled,
+        },
+        "tile_url":   tile_url,
+        "start_date": start_date,
+        "end_date":   end_date,
+    }
+
+
+# ─── Company-centric hotspot detection ────────────────────────────────────
+
+def get_hotspots_by_location(
+    center_lat: float,
+    center_lng: float,
+    radius_km: float,
+    start_date: str,
+    end_date: str,
+    num_points: int = None,
+    scale: int = None,
+) -> dict:
+    """
+    Detect CH4 anomaly hotspots around a specific location (company /
+    facility) for a given date range using Sentinel-5P TROPOMI.
+
+    Uses ``ee.Geometry.Point().buffer()`` so the query area is a circle
+    centred on the supplied coordinates rather than a bounding box.
+
+    Args:
+        center_lat:  Latitude of the centre point (facility location).
+        center_lng:  Longitude of the centre point.
+        radius_km:   Search radius in kilometres.
+        start_date:  ISO date string 'YYYY-MM-DD'.
+        end_date:    ISO date string 'YYYY-MM-DD'.
+        num_points:  Max sample points (default DEFAULT_HEATMAP_NUM_POINTS).
+        scale:       Sampling resolution in metres (default DEFAULT_HEATMAP_SCALE).
+
+    Returns:
+        {
+            "hotspots":   [ { id, latitude, longitude, ch4_ppb, anomaly_score,
+                              severity, priority, detected_at, distance_km }, … ],
+            "stats":      { mean, std, min, max, count, total_sampled },
+            "tile_url":   str | None,
+            "today_tile": str | None,   # current-day CH4 snapshot tile
+            "start_date": str,
+            "end_date":   str,
+            "center":     { "lat": float, "lng": float, "radius_km": float },
+        }
+    """
+    if num_points is None:
+        num_points = DEFAULT_HEATMAP_NUM_POINTS
+    if scale is None:
+        scale = DEFAULT_HEATMAP_SCALE
+
+    _ensure_init()
+
+    # Build circular region around the facility
+    point = ee.Geometry.Point([center_lng, center_lat])
+    region = point.buffer(radius_km * 1000)  # buffer in metres
+
+    # ── Historical image for the requested date range ─────────────────────
+    image = (
+        ee.ImageCollection("COPERNICUS/S5P/OFFL/L3_CH4")
+        .filterDate(start_date, end_date)
+        .filterBounds(region)
+        .select("CH4_column_volume_mixing_ratio_dry_air")
+        .mean()
+        .clip(region)
+    )
+
+    # Sample points uniformly across the circular region — with timeout
+    logger.debug(
+        '[GEE] Sampling hotspots by location: center=(%.4f, %.4f), radius=%s km',
+        center_lat, center_lng, radius_km,
+    )
+    try:
+        samples = _run_with_timeout(
+            lambda: image.sample(
+                region=region,
+                scale=scale,
+                numPixels=num_points,
+                geometries=True,
+            ).getInfo()
+        )
+    except TimeoutError as exc:
+        logger.warning('[GEE] Hotspots-by-location timed out: %s', exc)
+        raise
+    except Exception as exc:
+        logger.warning('[GEE] Hotspots-by-location failed: %s', exc)
+        raise
+
+    features = samples.get("features", [])
+
+    # ── Build raw points list ─────────────────────────────────────────────
+    raw_points = []
+    values = []
+    for f in features:
+        coords = f["geometry"]["coordinates"]
+        val = f["properties"].get("CH4_column_volume_mixing_ratio_dry_air")
+        if val is not None:
+            raw_points.append([coords[1], coords[0], float(val)])
+            values.append(float(val))
+
+    if not values:
+        empty = {
+            "hotspots": [], "stats": {}, "tile_url": None, "today_tile": None,
+            "start_date": start_date, "end_date": end_date,
+            "center": {"lat": center_lat, "lng": center_lng, "radius_km": radius_km},
+        }
+        # Still try to produce a today tile even when no historical data
+        try:
+            today_img = (
+                ee.ImageCollection("COPERNICUS/S5P/OFFL/L3_CH4")
+                .filterDate(
+                    ee.Date(datetime.now().strftime("%Y-%m-%d")).advance(-7, "day"),
+                    ee.Date(datetime.now().strftime("%Y-%m-%d")),
+                )
+                .filterBounds(region)
+                .select("CH4_column_volume_mixing_ratio_dry_air")
+                .mean()
+                .clip(region)
+            )
+            vis = {"min": CH4_VIS_PARAMS["min"], "max": CH4_VIS_PARAMS["max"],
+                   "palette": CH4_VIS_PARAMS["palette"]}
+            empty["today_tile"] = today_img.getMapId(vis)["tile_fetcher"].url_format
+        except Exception:
+            pass
+        return empty
+
+    values_arr = np.array(values)
+    v_mean = float(np.nanmean(values_arr))
+    v_std  = float(np.nanstd(values_arr)) or 1.0
+    v_min  = float(np.nanmin(values_arr))
+    v_max  = float(np.nanmax(values_arr))
+    total_sampled = len(values)
+
+    # ── Haversine helper (inline) ─────────────────────────────────────────
+    import math
+
+    def _hav(lat1, lon1, lat2, lon2):
+        R = 6371.0
+        dlat = math.radians(lat2 - lat1)
+        dlon = math.radians(lon2 - lon1)
+        a = (math.sin(dlat / 2) ** 2 +
+             math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) *
+             math.sin(dlon / 2) ** 2)
+        return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+    # ── Build hotspot list ────────────────────────────────────────────────
+    hotspots = []
+    for i, (lat, lng, ch4) in enumerate(raw_points):
+        z = (ch4 - v_mean) / v_std
+        if z < 0.5:
+            continue
+        if z >= 3.0:
+            severity, priority = "Severe", 1
+        elif z >= 2.0:
+            severity, priority = "Moderate", 2
+        else:
+            severity, priority = "Low", 3
+
+        hotspots.append({
+            "id":            f"GEE-{i + 1:04d}",
+            "latitude":      round(lat, 5),
+            "longitude":     round(lng, 5),
+            "ch4_ppb":       round(ch4, 2),
+            "anomaly_score": round(z, 4),
+            "severity":      severity,
+            "priority":      priority,
+            "detected_at":   end_date,
+            "distance_km":   round(_hav(center_lat, center_lng, lat, lng), 2),
+        })
+
+    hotspots.sort(key=lambda x: x["anomaly_score"], reverse=True)
+
+    # ── Tile URLs ─────────────────────────────────────────────────────────
+    vis = {"min": CH4_VIS_PARAMS["min"], "max": CH4_VIS_PARAMS["max"],
+           "palette": CH4_VIS_PARAMS["palette"]}
+    tile_url = None
+    today_tile = None
+
+    try:
+        tile_url = image.getMapId(vis)["tile_fetcher"].url_format
+    except Exception:
+        pass
+
+    # "Today" snapshot (last 7 days)
+    try:
+        today_img = (
+            ee.ImageCollection("COPERNICUS/S5P/OFFL/L3_CH4")
+            .filterDate(
+                ee.Date(datetime.now().strftime("%Y-%m-%d")).advance(-7, "day"),
+                ee.Date(datetime.now().strftime("%Y-%m-%d")),
+            )
+            .filterBounds(region)
+            .select("CH4_column_volume_mixing_ratio_dry_air")
+            .mean()
+            .clip(region)
+        )
+        today_tile = today_img.getMapId(vis)["tile_fetcher"].url_format
+    except Exception:
+        pass
+
+    return {
+        "hotspots": hotspots,
+        "stats": {
+            "mean":          round(v_mean, 2),
+            "std":           round(v_std, 2),
+            "min":           round(v_min, 2),
+            "max":           round(v_max, 2),
+            "count":         len(hotspots),
+            "total_sampled": total_sampled,
+        },
+        "tile_url":   tile_url,
+        "today_tile": today_tile,
+        "start_date": start_date,
+        "end_date":   end_date,
+        "center":     {"lat": center_lat, "lng": center_lng, "radius_km": radius_km},
     }
