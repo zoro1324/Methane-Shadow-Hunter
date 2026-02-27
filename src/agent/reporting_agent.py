@@ -36,7 +36,7 @@ class ComplianceAuditAgent:
     Falls back to template-based reports if LLM is unavailable.
     """
 
-    def __init__(self, model: str = "llama3.2", base_url: str = "http://localhost:11434"):
+    def __init__(self, model: str = "llama3:8b", base_url: str = "http://localhost:11434"):
         self.model = model
         self.base_url = base_url
         self._llm = None
