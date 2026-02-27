@@ -752,37 +752,27 @@ def _run_and_store_inversions(top_emitters, inverter, wind, run):
     for attr in top_emitters:
         try:
             wind_data = wind.get_wind(attr.latitude, attr.longitude)
-            Q_true = attr.emission_rate_kg_hr / 3600.0  # kg/s
+            Q_true_kg_s = attr.emission_rate_kg_hr / 3600.0  # kg/s
 
-            # Synthetic observation grid
-            n_receptors = 50
-            x = np.linspace(10, 500, n_receptors)
-            y = np.zeros(n_receptors)
-            z = np.ones(n_receptors) * 1.5
-
-            from src.plume.gaussian_plume import GaussianPlumeModel
-            fwd = GaussianPlumeModel(
-                emission_rate=Q_true,
-                source_x=0.0, source_y=0.0,
-                source_height=5.0, stability_class="D"
+            # Use the inverter's synthetic observation generator
+            # This ensures consistent receptor layouts and benefits from all fixes
+            synth = inverter.create_synthetic_observation(
+                true_Q_kg_s=Q_true_kg_s,
+                wind_speed=wind_data.speed_ms,
+                stability_class=wind_data.stability_class,
+                n_receptors=200,
+                domain_m=3000,
+                noise_level=0.05,
             )
-            import torch
-            with torch.no_grad():
-                obs = fwd(
-                    torch.tensor(x, dtype=torch.float64),
-                    torch.tensor(y, dtype=torch.float64),
-                    torch.tensor(z, dtype=torch.float64),
-                    wind_speed=wind_data.speed,
-                ).numpy()
 
-            noise = np.random.normal(0, 0.05 * obs.mean(), n_receptors)
-            obs_noisy = np.clip(obs + noise, 0, None)
-
+            # Run inversion (now uses adaptive initial Q, scaled observations, etc.)
             result = inverter.invert(
-                observed_concentrations=obs_noisy,
-                receptor_x=x, receptor_y=y, receptor_z=z,
-                wind_speed=wind_data.speed,
-                initial_Q=0.01,
+                observed_concentrations=synth["observed_concentrations"],
+                receptor_x=synth["receptor_x"],
+                receptor_y=synth["receptor_y"],
+                receptor_z=synth["receptor_z"],
+                wind_speed=wind_data.speed_ms,
+                initial_Q=0.01,  # Will be overridden by adaptive estimation
                 source_height=5.0,
                 true_Q_kg_hr=attr.emission_rate_kg_hr,
             )
