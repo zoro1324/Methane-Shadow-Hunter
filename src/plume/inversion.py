@@ -41,14 +41,16 @@ class PlumeInverter:
 
     def __init__(
         self,
-        learning_rate: float = 0.01,
-        max_iterations: int = 1000,
-        convergence_tol: float = 1e-8,
+        learning_rate: float = 0.1,
+        max_iterations: int = 2000,
+        convergence_tol: float = 1e-6,
+        min_iterations: int = 300,
         stability_class: str = "D",
     ):
         self.lr = learning_rate
         self.max_iter = max_iterations
         self.tol = convergence_tol
+        self.min_iter = min_iterations
         self.stability_class = stability_class
 
     def invert(
@@ -77,12 +79,30 @@ class PlumeInverter:
             InversionResult with estimated emission rate and diagnostics
         """
         # Convert to tensors
-        obs = torch.tensor(observed_concentrations, dtype=torch.float64)
+        obs_raw = torch.tensor(observed_concentrations, dtype=torch.float64)
         rx = torch.tensor(receptor_x, dtype=torch.float64)
         ry = torch.tensor(receptor_y, dtype=torch.float64)
         rz = torch.tensor(receptor_z, dtype=torch.float64)
 
-        # Initialize model with initial guess
+        # ── Scale observations to avoid vanishing gradients ──
+        # When wind is strong or Q is small, concentrations can be ~1e-10,
+        # making MSE loss ~1e-20 with near-zero gradients.
+        obs_scale = obs_raw.max().item()
+        if obs_scale < 1e-15:
+            obs_scale = 1.0  # fallback if all zeros
+        obs = obs_raw / obs_scale
+
+        # ── Adaptive initial Q ──
+        # Estimate Q₀ from the peak observed concentration:
+        #   C_peak ≈ Q / (2π u σ_y σ_z)  at the receptor with highest C
+        # This gives a much better starting point than a fixed 0.01.
+        adaptive_Q = self._estimate_initial_Q(
+            observed_concentrations, receptor_x, wind_speed, source_height
+        )
+        if adaptive_Q is not None and adaptive_Q > 1e-10:
+            initial_Q = adaptive_Q
+
+        # Initialize model
         model = GaussianPlumeModel(
             emission_rate=initial_Q,
             source_x=0.0,
@@ -91,7 +111,11 @@ class PlumeInverter:
             stability_class=self.stability_class,
         )
 
+        # Use Adam with a learning-rate scheduler
         optimizer = torch.optim.Adam(model.parameters(), lr=self.lr)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode='min', factor=0.5, patience=100, min_lr=1e-5
+        )
         loss_fn = nn.MSELoss()
 
         prev_loss = float("inf")
@@ -101,18 +125,24 @@ class PlumeInverter:
         for i in range(self.max_iter):
             optimizer.zero_grad()
 
-            predicted = model.forward(rx, ry, rz, wind_speed)
+            predicted_raw = model.forward(rx, ry, rz, wind_speed)
+            predicted = predicted_raw / obs_scale   # same scaling
             loss = loss_fn(predicted, obs)
 
             loss.backward()
             optimizer.step()
+            scheduler.step(loss)
 
             current_loss = loss.item()
 
-            if abs(prev_loss - current_loss) < self.tol:
-                converged = True
-                final_loss = current_loss
-                break
+            # Only check convergence after warm-up iterations
+            if i >= self.min_iter:
+                # Relative convergence criterion
+                rel_change = abs(prev_loss - current_loss) / (abs(prev_loss) + 1e-30)
+                if rel_change < self.tol:
+                    converged = True
+                    final_loss = current_loss
+                    break
 
             prev_loss = current_loss
             final_loss = current_loss
@@ -143,29 +173,61 @@ class PlumeInverter:
             converged=converged,
         )
 
+    def _estimate_initial_Q(
+        self, observed_concentrations, receptor_x, wind_speed, source_height
+    ) -> Optional[float]:
+        """
+        Estimate a reasonable initial Q (kg/s) from observed concentrations.
+
+        Uses the peak-concentration receptor and the analytic Gaussian formula
+        to back-calculate an approximate emission rate.
+        """
+        try:
+            peak_idx = int(np.argmax(observed_concentrations))
+            C_peak = observed_concentrations[peak_idx]
+            if C_peak <= 0:
+                return None
+
+            x_peak = max(float(receptor_x[peak_idx]), 10.0)
+            u = max(wind_speed, 0.5)
+
+            coeff = PG_COEFFICIENTS.get(self.stability_class, PG_COEFFICIENTS["D"])
+            x_km = x_peak / 1000.0
+            sy = coeff["a"] * (x_km ** coeff["b"]) * 1000  # metres
+            sz = coeff["c"] * (x_km ** coeff["d"]) * 1000
+
+            # C_peak ≈ Q / (2π u σ_y σ_z)  (on centreline, ground-level source)
+            Q_est = C_peak * 2 * np.pi * u * sy * sz
+            return float(np.clip(Q_est, 1e-10, 100.0))
+        except Exception:
+            return None
+
     def _compute_confidence_interval(
         self, model, obs, rx, ry, rz, wind_speed, alpha=0.05
     ) -> Tuple[float, float]:
         """
         Compute approximate 95% confidence interval for Q
         using the Hessian of the loss w.r.t. log(Q).
+        Clamped to avoid overflow in exp().
         """
         try:
             model.zero_grad()
             predicted = model.forward(rx, ry, rz, wind_speed)
             loss = nn.MSELoss()(predicted, obs)
-            
+
             # Compute second derivative of loss w.r.t. log(Q)
             grad = torch.autograd.grad(loss, model.log_Q, create_graph=True)[0]
             hessian = torch.autograd.grad(grad, model.log_Q)[0]
 
             if hessian.item() > 0:
                 se_log_Q = 1.0 / np.sqrt(hessian.item())
+                # Clamp se to prevent overflow: exp(700) ≈ inf for float64
+                se_log_Q = min(se_log_Q, 50.0)
                 z = 1.96  # 95% CI
 
                 log_Q = model.log_Q.item()
-                ci_low = np.exp(log_Q - z * se_log_Q) * 3600
-                ci_high = np.exp(log_Q + z * se_log_Q) * 3600
+                ci_low = np.exp(np.clip(log_Q - z * se_log_Q, -50, 50)) * 3600
+                ci_high = np.exp(np.clip(log_Q + z * se_log_Q, -50, 50)) * 3600
                 return ci_low, ci_high
         except Exception:
             pass
@@ -190,7 +252,10 @@ class PlumeInverter:
         Returns dict with receptor positions, observed concentrations,
         and true parameters for validation.
         """
-        rng = np.random.RandomState(42)
+        # Use a seed derived from the input parameters so each emission
+        # rate + wind combination gets a unique (but reproducible) receptor layout.
+        seed = int(abs(true_Q_kg_s * 1e6 + wind_speed * 1e3 + source_height * 10)) % (2**31)
+        rng = np.random.RandomState(seed)
 
         # Ground truth model
         true_model = GaussianPlumeModel(
