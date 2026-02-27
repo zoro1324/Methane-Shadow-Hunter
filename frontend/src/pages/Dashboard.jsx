@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { motion } from 'framer-motion'
+import { motion, AnimatePresence } from 'framer-motion'
 import {
   Flame,
   CloudRain,
@@ -12,6 +12,10 @@ import {
   TrendingUp,
   RefreshCw,
   Radio,
+  Play,
+  ChevronDown,
+  CheckCircle2,
+  XCircle,
 } from 'lucide-react'
 import StatCard from '../components/cards/StatCard'
 import {
@@ -21,7 +25,7 @@ import {
 } from '../components/charts/Charts'
 import { StatusBadge } from '../components/ui/AlertCard'
 import { Spinner } from '../components/ui/Common'
-import { dashboardService } from '../services/api'
+import { dashboardService, pipelineService } from '../services/api'
 
 /**
  * Dashboard Overview Page
@@ -33,6 +37,12 @@ const Dashboard = () => {
   const [trend, setTrend] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+
+  // Pipeline trigger state
+  const [pipelineRunning, setPipelineRunning] = useState(false)
+  const [pipelineStatus, setPipelineStatus] = useState(null) // 'success' | 'error' | null
+  const [pipelineMsg, setPipelineMsg] = useState('')
+  const [modeMenuOpen, setModeMenuOpen] = useState(false)
 
   const fetchDashboardData = async () => {
     setLoading(true)
@@ -53,6 +63,36 @@ const Dashboard = () => {
   }
 
   useEffect(() => { fetchDashboardData() }, [])
+
+  const runPipeline = async (mode = 'demo') => {
+    setModeMenuOpen(false)
+    setPipelineRunning(true)
+    setPipelineStatus(null)
+    setPipelineMsg(`Starting pipeline in ${mode} mode…`)
+    try {
+      const { run_id } = await pipelineService.trigger(mode)
+      setPipelineMsg(`Pipeline running (ID: ${run_id}) — polling for results…`)
+      const result = await pipelineService.pollRun(run_id, {
+        onProgress: (run) => {
+          const parts = []
+          if (run.total_hotspots)        parts.push(`${run.total_hotspots} hotspots`)
+          if (run.plumes_count)          parts.push(`${run.plumes_count} plumes`)
+          if (run.attributions_count)    parts.push(`${run.attributions_count} attributions`)
+          if (parts.length) setPipelineMsg(`Running… ${parts.join(' · ')}`)
+        },
+      })
+      setPipelineStatus('success')
+      setPipelineMsg(
+        `Pipeline complete — ${result.plumes_count ?? 0} plumes · ${result.attributions_count ?? 0} attributions · ${result.reports_count ?? 0} reports`
+      )
+      await fetchDashboardData()
+    } catch (err) {
+      setPipelineStatus('error')
+      setPipelineMsg(err?.response?.data?.error || err.message || 'Pipeline failed')
+    } finally {
+      setPipelineRunning(false)
+    }
+  }
 
   // Severity distribution from backend summary counts
   const severityDistribution = (() => {
@@ -133,8 +173,85 @@ const Dashboard = () => {
             <RefreshCw className="w-4 h-4 text-gray-500" />
             <span className="text-sm text-gray-400">Refresh</span>
           </button>
+
+          {/* Run Pipeline split-button */}
+          <div className="relative">
+            <div className="flex items-center">
+              <button
+                onClick={() => runPipeline('demo')}
+                disabled={pipelineRunning}
+                className="flex items-center gap-2 px-4 py-2 bg-accent-green hover:bg-accent-green/80 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-l-lg transition-colors text-sm font-medium"
+              >
+                {pipelineRunning
+                  ? <Spinner size="sm" className="text-white" />
+                  : <Play className="w-4 h-4" />}
+                {pipelineRunning ? 'Running…' : 'Run Pipeline'}
+              </button>
+              <button
+                onClick={() => setModeMenuOpen(o => !o)}
+                disabled={pipelineRunning}
+                className="flex items-center px-2 py-2 bg-accent-green/80 hover:bg-accent-green/60 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-r-lg border-l border-white/20 transition-colors"
+              >
+                <ChevronDown className="w-4 h-4" />
+              </button>
+            </div>
+
+            <AnimatePresence>
+              {modeMenuOpen && (
+                <motion.div
+                  initial={{ opacity: 0, y: -4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -4 }}
+                  className="absolute right-0 mt-1 w-44 glass-card border border-dark-border rounded-lg shadow-xl z-50 overflow-hidden"
+                >
+                  <button
+                    onClick={() => runPipeline('demo')}
+                    className="w-full text-left px-4 py-3 text-sm text-gray-200 hover:bg-accent-green/10 hover:text-accent-green transition-colors"
+                  >
+                    <span className="font-medium">Demo</span>
+                    <p className="text-xs text-gray-500 mt-0.5">Bundled dataset, fast</p>
+                  </button>
+                  <button
+                    onClick={() => runPipeline('live')}
+                    className="w-full text-left px-4 py-3 text-sm text-gray-200 hover:bg-accent-green/10 hover:text-accent-green transition-colors border-t border-dark-border"
+                  >
+                    <span className="font-medium">Live</span>
+                    <p className="text-xs text-gray-500 mt-0.5">GEE + CarbonMapper API</p>
+                  </button>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
         </div>
       </div>
+
+      {/* Pipeline status toast */}
+      <AnimatePresence>
+        {pipelineMsg && (
+          <motion.div
+            initial={{ opacity: 0, y: -12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -12 }}
+            className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm ${
+              pipelineRunning
+                ? 'bg-info-blue/10 border border-info-blue/30 text-info-blue'
+                : pipelineStatus === 'success'
+                ? 'bg-accent-green/10 border border-accent-green/30 text-accent-green'
+                : 'bg-danger-red/10 border border-danger-red/30 text-danger-red'
+            }`}
+          >
+            {pipelineRunning
+              ? <Spinner size="sm" className="text-info-blue" />
+              : pipelineStatus === 'success'
+              ? <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+              : <XCircle className="w-4 h-4 flex-shrink-0" />}
+            <span>{pipelineMsg}</span>
+            {!pipelineRunning && (
+              <button onClick={() => setPipelineMsg('')} className="ml-auto opacity-60 hover:opacity-100">✕</button>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Stats Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
