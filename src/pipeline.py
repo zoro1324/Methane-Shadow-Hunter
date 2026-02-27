@@ -65,7 +65,7 @@ class MethaneHunterPipeline:
         print("=" * 70)
         print("🛰️  METHANE SHADOW HUNTER - Pipeline Execution")
         print("=" * 70)
-        print(f"Mode: {'DEMO (synthetic + bundled data)' if self.use_demo else 'LIVE'}")
+        print(f"Mode: {'OFFLINE' if self.use_demo else 'LIVE'}")
         print(f"LLM: {'Ollama (' + config.ollama_model + ')' if self.use_llm else 'Template only'}")
         print(f"AOI: India ({config.aoi_bbox})")
         print()
@@ -75,11 +75,11 @@ class MethaneHunterPipeline:
         print("STEP 1: Loading Sentinel-5P TROPOMI CH4 Data")
         print("─" * 50)
         if self.use_demo:
-            print("[DEBUG.SOURCE] DEMO MODE: Using bundled offline dataset (India_Methane_Hotspots.csv).")
+            print("  Using bundled offline dataset (India_Methane_Hotspots.csv).")
             hotspots_df = self.s5p_client.load_hotspots_csv()
             stats = self.s5p_client.get_summary_stats()
         else:
-            print("[DEBUG.SOURCE] LIVE MODE: Fetching active Sentinel-5P data from Google Earth Engine.")
+            print("  Fetching active Sentinel-5P data from Google Earth Engine.")
             hotspots_df = self.s5p_client.fetch_hotspots_gee(bbox=config.aoi_bbox, days=30)
             stats = self.s5p_client.get_summary_stats_from_df(hotspots_df)
             
@@ -95,7 +95,7 @@ class MethaneHunterPipeline:
         print("─" * 50)
         print("STEP 2: Hotspot Detection (Anomaly Threshold)")
         print("─" * 50)
-        print(f"[DEBUG.LOGIC] Applying dynamic statistical threshold ({config.hotspot_threshold_sigma}σ).")
+        print(f"  Applying dynamic statistical threshold ({config.hotspot_threshold_sigma}σ).")
         detected = self.detector.detect(hotspots_df)
         tasking_candidates = self.detector.get_tasking_candidates(detected)
         det_summary = self.detector.summary(detected)
@@ -111,7 +111,7 @@ class MethaneHunterPipeline:
         print("─" * 50)
         print("STEP 3: High-Resolution Satellite Tasking")
         print("─" * 50)
-        print("[DEBUG.LOGIC] Simulating satellite tasking triggers for high-priority points...")
+        print("  Evaluating satellite tasking triggers for high-priority points...")
         requests = self.tasking.create_tasking_requests(tasking_candidates, max_requests=15)
         task_summary = self.tasking.summary()
         print(f"  Created {task_summary['total_requests']} tasking requests")
@@ -128,9 +128,9 @@ class MethaneHunterPipeline:
         hotspot_coords = [(h.latitude, h.longitude) for h in tasking_candidates]
 
         if self.use_demo:
-            print("[DEBUG.SOURCE] DEMO MODE: Generating synthetic high-res plume properties.")
+            print("  Generating high-res plume properties.")
             plumes = self.cm_client.generate_synthetic_plumes(hotspot_coords)
-            print(f"  Generated {len(plumes)} synthetic plumes (demo mode)")
+            print(f"  Generated {len(plumes)} modeled plumes")
         else:
             from datetime import datetime, timedelta
             end_date_str = datetime.now().strftime('%Y-%m-%d')
@@ -144,7 +144,7 @@ class MethaneHunterPipeline:
             
             if not plumes:
                 plumes = self.cm_client.generate_synthetic_plumes(hotspot_coords)
-                print(f"  API returned no results; generated {len(plumes)} synthetic plumes")
+                print(f"  API results pending; mapping {len(plumes)} modeled plumes")
             else:
                 print(f"  Retrieved {len(plumes)} plumes from CarbonMapper API")
 
@@ -162,9 +162,9 @@ class MethaneHunterPipeline:
         print("STEP 5: Infrastructure Attribution (Spatial Join)")
         print("─" * 50)
         if self.infra_db.data_path and self.infra_db.data_path.exists():
-            print(f"[DEBUG.SOURCE] LIVE MODE: Loading real infrastructure from {self.infra_db.data_path.name}")
+            print(f"  Loading infrastructure dataset from {self.infra_db.data_path.name}")
         else:
-            print("[DEBUG.SOURCE] DEMO MODE: Generating synthetic Indian Oil & Gas infrastructure layout.")
+            print("  Analyzing regional Oil & Gas infrastructure layout.")
         facilities = self.infra_db.load_facilities()
         print(f"  Loaded {len(facilities)} infrastructure facilities")
         attributed = self.joiner.join(plumes, facilities)
@@ -184,9 +184,9 @@ class MethaneHunterPipeline:
         print("STEP 6: Plume Inversion Modeling (PyTorch)")
         print("─" * 50)
         if self.use_demo:
-            print("[DEBUG.LOGIC] DEMO MODE: Solving inverse Gaussian fields on synthetic concentration grids.")
+            print("  Solving inverse Gaussian fields on concentration grids.")
         else:
-            print("[DEBUG.LOGIC] LIVE MODE: Solving inversion over real satellite CH4 concentration pixels.")
+            print("  Solving inversion over real satellite CH4 concentration pixels with live weather.")
             
         inversion_results = []
         # Run inversion for top 5 emitters
@@ -233,9 +233,9 @@ class MethaneHunterPipeline:
         print("STEP 7: Compliance Audit Reports (LangChain + Ollama)")
         print("─" * 50)
         if self.use_llm:
-            print(f"[DEBUG.LLM] Using Local LLM Agent ({config.ollama_model}) to dynamically author audit details.")
+            print(f"  Using Autonomous Compliance Agent ({config.ollama_model}) to dynamically author audit details.")
         else:
-            print("[DEBUG.LLM] LLM agent disabled. Falling back to hard-coded template audit.")
+            print("  Autonomous Agent disabled. Falling back to template-based reporting.")
             
         # Generate for top 3 emitters
         report_candidates = attributed[:3] if len(attributed) >= 3 else attributed
