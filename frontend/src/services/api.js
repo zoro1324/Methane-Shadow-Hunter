@@ -1,250 +1,190 @@
 import axios from 'axios'
 
 /**
- * API Service
- * Centralized API configuration and service methods
- * Currently uses mock data, but structured for easy backend integration
+ * API Service – wired to Django REST Framework backend
+ * Base URL: http://localhost:8000/api
  */
 
-// Base API configuration
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
 
-// Create axios instance with default config
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 10000,
-  headers: {
-    'Content-Type': 'application/json',
-  },
+  timeout: 30000,
+  headers: { 'Content-Type': 'application/json' },
 })
 
-// Request interceptor for auth tokens
+// ─── Request / Response interceptors ─────────────────────────────────────
 apiClient.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('authToken')
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`
-    }
+    if (token) config.headers.Authorization = `Bearer ${token}`
     return config
   },
-  (error) => Promise.reject(error)
+  (error) => Promise.reject(error),
 )
 
-// Response interceptor for error handling
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      // Handle unauthorized - redirect to login
       localStorage.removeItem('authToken')
-      window.location.href = '/'
     }
     return Promise.reject(error)
-  }
+  },
 )
 
-/**
- * Emissions Service
- */
-export const emissionsService = {
-  // Get emission trends data
-  getTrends: async (params = {}) => {
-    const response = await apiClient.get('/emissions/trends', { params })
-    return response.data
-  },
+// ─── Helper: unwrap paginated DRF response ───────────────────────────────
+const unwrap = (res) => {
+  // DRF pagination wraps results in { count, next, previous, results }
+  if (res.data?.results !== undefined) return res.data.results
+  return res.data
+}
 
-  // Get regional distribution
-  getRegionalDistribution: async () => {
-    const response = await apiClient.get('/emissions/regions')
-    return response.data
-  },
-
-  // Get severity distribution
-  getSeverityDistribution: async () => {
-    const response = await apiClient.get('/emissions/severity')
-    return response.data
-  },
-
-  // Get dashboard stats
-  getDashboardStats: async () => {
-    const response = await apiClient.get('/dashboard/stats')
-    return response.data
+// ─── Dashboard ───────────────────────────────────────────────────────────
+export const dashboardService = {
+  getSummary: async () => {
+    const res = await apiClient.get('/dashboard/summary/')
+    return res.data
   },
 }
 
-/**
- * Super Emitters Service
- */
-export const superEmittersService = {
-  // Get all super emitters
+// ─── Facilities ──────────────────────────────────────────────────────────
+export const facilitiesService = {
   getAll: async (params = {}) => {
-    const response = await apiClient.get('/super-emitters', { params })
-    return response.data
+    const res = await apiClient.get('/facilities/', { params })
+    return unwrap(res)
   },
-
-  // Get single super emitter by ID
   getById: async (id) => {
-    const response = await apiClient.get(`/super-emitters/${id}`)
-    return response.data
+    const res = await apiClient.get(`/facilities/${id}/`)
+    return res.data
   },
-
-  // Update super emitter status
-  updateStatus: async (id, status) => {
-    const response = await apiClient.patch(`/super-emitters/${id}/status`, { status })
-    return response.data
+  getByType: async () => {
+    const res = await apiClient.get('/facilities/by_type/')
+    return res.data
   },
-
-  // Create investigation
-  createInvestigation: async (id, data) => {
-    const response = await apiClient.post(`/super-emitters/${id}/investigate`, data)
-    return response.data
+  getNearby: async (lat, lon, radius = 50) => {
+    const res = await apiClient.get('/facilities/nearby/', { params: { lat, lon, radius } })
+    return res.data
   },
 }
 
-/**
- * Map Service
- */
-export const mapService = {
-  // Get map markers
-  getMarkers: async (bounds = null) => {
-    const params = bounds ? { bounds: JSON.stringify(bounds) } : {}
-    const response = await apiClient.get('/map/markers', { params })
-    return response.data
-  },
-
-  // Get heatmap data
-  getHeatmapData: async () => {
-    const response = await apiClient.get('/map/heatmap')
-    return response.data
-  },
-}
-
-/**
- * Alerts Service
- */
-export const alertsService = {
-  // Get all alerts
+// ─── Hotspots (Sentinel-5P) ──────────────────────────────────────────────
+export const hotspotsService = {
   getAll: async (params = {}) => {
-    const response = await apiClient.get('/alerts', { params })
-    return response.data
+    const res = await apiClient.get('/hotspots/', { params })
+    return unwrap(res)
   },
-
-  // Mark alert as read
-  markAsRead: async (id) => {
-    const response = await apiClient.patch(`/alerts/${id}/read`)
-    return response.data
-  },
-
-  // Mark all as read
-  markAllAsRead: async () => {
-    const response = await apiClient.patch('/alerts/read-all')
-    return response.data
-  },
-
-  // Delete alert
-  delete: async (id) => {
-    const response = await apiClient.delete(`/alerts/${id}`)
-    return response.data
-  },
-
-  // Get notification preferences
-  getPreferences: async () => {
-    const response = await apiClient.get('/alerts/preferences')
-    return response.data
-  },
-
-  // Update notification preferences
-  updatePreferences: async (preferences) => {
-    const response = await apiClient.put('/alerts/preferences', preferences)
-    return response.data
+  getStats: async () => {
+    const res = await apiClient.get('/hotspots/stats/')
+    return res.data
   },
 }
 
-/**
- * Reports Service
- */
+// ─── Detected Hotspots ───────────────────────────────────────────────────
+export const detectedHotspotsService = {
+  getAll: async (params = {}) => {
+    const res = await apiClient.get('/detected-hotspots/', { params })
+    return unwrap(res)
+  },
+}
+
+// ─── Plume Observations ──────────────────────────────────────────────────
+export const plumesService = {
+  getAll: async (params = {}) => {
+    const res = await apiClient.get('/plumes/', { params })
+    return unwrap(res)
+  },
+}
+
+// ─── Attributed Emissions ────────────────────────────────────────────────
+export const attributionsService = {
+  getAll: async (params = {}) => {
+    const res = await apiClient.get('/attributions/', { params })
+    return unwrap(res)
+  },
+  getMetrics: async () => {
+    const res = await apiClient.get('/attributions/metrics/')
+    return res.data
+  },
+}
+
+// ─── Inversion Results ───────────────────────────────────────────────────
+export const inversionsService = {
+  getAll: async (params = {}) => {
+    const res = await apiClient.get('/inversions/', { params })
+    return unwrap(res)
+  },
+  getAccuracy: async () => {
+    const res = await apiClient.get('/inversions/accuracy/')
+    return res.data
+  },
+}
+
+// ─── Tasking Requests ────────────────────────────────────────────────────
+export const taskingService = {
+  getAll: async (params = {}) => {
+    const res = await apiClient.get('/tasking-requests/', { params })
+    return unwrap(res)
+  },
+}
+
+// ─── Audit Reports ───────────────────────────────────────────────────────
 export const reportsService = {
-  // Get all reports
-  getAll: async () => {
-    const response = await apiClient.get('/reports')
-    return response.data
+  getAll: async (params = {}) => {
+    const res = await apiClient.get('/reports/', { params })
+    return unwrap(res)
   },
-
-  // Get single report
   getById: async (id) => {
-    const response = await apiClient.get(`/reports/${id}`)
-    return response.data
-  },
-
-  // Download report PDF
-  downloadPdf: async (id) => {
-    const response = await apiClient.get(`/reports/${id}/download`, {
-      responseType: 'blob',
-    })
-    return response.data
-  },
-
-  // Generate custom report
-  generateCustom: async (params) => {
-    const response = await apiClient.post('/reports/generate', params)
-    return response.data
-  },
-
-  // Export data
-  exportData: async (format, params = {}) => {
-    const response = await apiClient.get(`/reports/export/${format}`, {
-      params,
-      responseType: 'blob',
-    })
-    return response.data
+    const res = await apiClient.get(`/reports/${id}/`)
+    return res.data
   },
 }
 
-/**
- * Satellites Service
- */
-export const satellitesService = {
-  // Get satellite status
-  getStatus: async () => {
-    const response = await apiClient.get('/satellites/status')
-    return response.data
+// ─── Pipeline ────────────────────────────────────────────────────────────
+export const pipelineService = {
+  getRuns: async (params = {}) => {
+    const res = await apiClient.get('/pipeline-runs/', { params })
+    return unwrap(res)
   },
-
-  // Get satellite passes
-  getPasses: async (params = {}) => {
-    const response = await apiClient.get('/satellites/passes', { params })
-    return response.data
+  trigger: async (mode = 'demo') => {
+    const res = await apiClient.post('/pipeline/trigger/', { mode })
+    return res.data
+  },
+  getRunResults: async (id) => {
+    const res = await apiClient.get(`/pipeline-runs/${id}/results/`)
+    return res.data
   },
 }
 
-/**
- * Auth Service
- */
-export const authService = {
-  // Login
-  login: async (credentials) => {
-    const response = await apiClient.post('/auth/login', credentials)
-    if (response.data.token) {
-      localStorage.setItem('authToken', response.data.token)
-    }
-    return response.data
+// ─── GeoJSON (for map) ──────────────────────────────────────────────────
+export const geojsonService = {
+  getFacilities: async () => {
+    const res = await apiClient.get('/geojson/facilities/')
+    return res.data
   },
-
-  // Logout
-  logout: () => {
-    localStorage.removeItem('authToken')
+  getHotspots: async () => {
+    const res = await apiClient.get('/geojson/hotspots/')
+    return res.data
   },
-
-  // Get current user
-  getCurrentUser: async () => {
-    const response = await apiClient.get('/auth/me')
-    return response.data
+  getAttributions: async () => {
+    const res = await apiClient.get('/geojson/attributions/')
+    return res.data
   },
+}
 
-  // Update profile
-  updateProfile: async (data) => {
-    const response = await apiClient.put('/auth/profile', data)
-    return response.data
+// ─── Google Earth Engine (heatmap) ───────────────────────────────────────
+export const geeService = {
+  /** Get GEE tile URL for Sentinel-5P CH4 overlay */
+  getCH4Tiles: async (days = 30) => {
+    const res = await apiClient.get('/gee/ch4-tiles/', { params: { days } })
+    return res.data
+  },
+  /** Get sampled CH4 points as [lat, lng, intensity] for leaflet.heat */
+  getCH4Heatmap: async (days = 30, numPoints = 1000, scale = 20000) => {
+    const res = await apiClient.get('/gee/ch4-heatmap/', {
+      params: { days, num_points: numPoints, scale },
+    })
+    return res.data
   },
 }
 

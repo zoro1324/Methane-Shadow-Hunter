@@ -32,4 +32,8 @@ urlpatterns = [
     path('geojson/facilities/', views.facilities_geojson, name='geojson-facilities'),
     path('geojson/hotspots/', views.hotspots_geojson, name='geojson-hotspots'),
     path('geojson/attributions/', views.attributions_geojson, name='geojson-attributions'),
+
+    # Google Earth Engine endpoints (heatmap)
+    path('gee/ch4-tiles/', views.gee_ch4_tiles, name='gee-ch4-tiles'),
+    path('gee/ch4-heatmap/', views.gee_ch4_heatmap, name='gee-ch4-heatmap'),
 ]
