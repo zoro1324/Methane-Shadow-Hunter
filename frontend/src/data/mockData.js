@@ -46,6 +46,8 @@ export const dashboardStats = {
   co2EquivalentChange: -8,
   highRiskZones: 24,
   highRiskZonesChange: +3,
+  satellitesActive: 7,
+  satellitesActiveChange: +2,
   lastUpdate: '2 min ago',
 }
 
@@ -62,6 +64,7 @@ export const superEmitters = [
     lastDetected: '2024-01-15T14:30:00Z',
     company: 'Unknown',
     riskLevel: 'Critical',
+    satellite: 'Sentinel-5P',
   },
   {
     id: 'SE-002',
@@ -74,6 +77,7 @@ export const superEmitters = [
     lastDetected: '2024-01-15T12:15:00Z',
     company: 'ExxonMobil',
     riskLevel: 'High',
+    satellite: 'TROPOMI',
   },
   {
     id: 'SE-003',
@@ -86,6 +90,7 @@ export const superEmitters = [
     lastDetected: '2024-01-15T10:45:00Z',
     company: 'ConocoPhillips',
     riskLevel: 'High',
+    satellite: 'GHGSat',
   },
   {
     id: 'SE-004',
@@ -98,6 +103,7 @@ export const superEmitters = [
     lastDetected: '2024-01-14T18:20:00Z',
     company: 'Cabot Oil & Gas',
     riskLevel: 'Medium',
+    satellite: 'MethaneSAT',
   },
   {
     id: 'SE-005',
@@ -110,6 +116,7 @@ export const superEmitters = [
     lastDetected: '2024-01-15T16:00:00Z',
     company: 'Chesapeake',
     riskLevel: 'Critical',
+    satellite: 'Sentinel-5P',
   },
   {
     id: 'SE-006',
@@ -122,6 +129,7 @@ export const superEmitters = [
     lastDetected: '2024-01-15T09:30:00Z',
     company: 'Devon Energy',
     riskLevel: 'Medium',
+    satellite: 'TROPOMI',
   },
   {
     id: 'SE-007',
@@ -134,6 +142,7 @@ export const superEmitters = [
     lastDetected: '2024-01-15T13:45:00Z',
     company: 'Noble Energy',
     riskLevel: 'High',
+    satellite: 'GHGSat',
   },
   {
     id: 'SE-008',
@@ -146,6 +155,7 @@ export const superEmitters = [
     lastDetected: '2024-01-13T22:10:00Z',
     company: 'BP',
     riskLevel: 'Low',
+    satellite: 'MethaneSAT',
   },
 ]
 

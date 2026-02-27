@@ -11,7 +11,7 @@ import {
   User,
   Menu,
   X,
-  Flame,
+  Satellite,
   ChevronDown,
   Settings,
   LogOut,

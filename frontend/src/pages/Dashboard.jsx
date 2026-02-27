@@ -3,7 +3,7 @@ import {
   Flame,
   CloudRain,
   MapPin,
-  TrendingUp,
+  Satellite,
   AlertTriangle,
   Clock,
   Activity,
@@ -84,10 +84,10 @@ const Dashboard = () => {
           delay={0.2}
         />
         <StatCard
-          title="Detection Accuracy"
-          value="94.2%"
-          change={+2.1}
-          icon={TrendingUp}
+          title="Satellites Active Today"
+          value={dashboardStats.satellitesActive}
+          change={dashboardStats.satellitesActiveChange}
+          icon={Satellite}
           iconColor="bg-accent-green/20"
           delay={0.3}
         />
