@@ -6,6 +6,7 @@ Demo mode uses configurable constant wind fields.
 """
 
 import numpy as np
+import requests
 from dataclasses import dataclass
 from typing import Optional
 
@@ -29,14 +30,16 @@ class WindField:
     Can be extended to integrate with ERA5 reanalysis data.
     """
 
-    def __init__(self, default_speed: float = 3.0, default_direction: float = 270.0):
+    def __init__(self, default_speed: float = 3.0, default_direction: float = 270.0, use_live: bool = False):
         """
         Args:
             default_speed: default wind speed (m/s)
             default_direction: default direction wind comes FROM (degrees)
+            use_live: if True, fetch real-time wind from Open-Meteo API
         """
         self.default_speed = default_speed
         self.default_direction = default_direction
+        self.use_live = use_live
 
     def get_wind(
         self,
@@ -47,18 +50,46 @@ class WindField:
         """
         Get wind conditions at a location.
         
-        In demo mode, returns the default wind with slight spatial variation.
+        If use_live is True, fetches current wind speed from Open-Meteo API.
+        Otherwise (or on fallback), returns default wind with slight spatial variation.
         """
-        # Add some spatial variation
-        rng = np.random.RandomState(
-            int(abs(latitude * 1000 + longitude * 100)) % 2**31
-        )
+        speed = None
+        direction = None
+        source = "synthetic"
+        
+        if self.use_live:
+            try:
+                # Open-Meteo free API for current wind (10m above ground)
+                # Does not require API key
+                url = "https://api.open-meteo.com/v1/forecast"
+                params = {
+                    "latitude": latitude,
+                    "longitude": longitude,
+                    "current": ["wind_speed_10m", "wind_direction_10m"],
+                    "wind_speed_unit": "ms"
+                }
+                response = requests.get(url, params=params, timeout=5)
+                if response.status_code == 200:
+                    data = response.json()
+                    current = data.get("current", {})
+                    if "wind_speed_10m" in current and "wind_direction_10m" in current:
+                        speed = current["wind_speed_10m"]
+                        direction = current["wind_direction_10m"]
+                        source = "open-meteo"
+            except Exception as e:
+                print(f"[WindField] Open-Meteo API fetch failed: {e}. Falling back to synthetic.")
 
-        speed = self.default_speed + rng.uniform(-1.0, 1.0)
-        speed = max(speed, 0.5)
-
-        direction = self.default_direction + rng.uniform(-30, 30)
-        direction = direction % 360
+        if speed is None or direction is None:
+            # Add some spatial variation
+            rng = np.random.RandomState(
+                int(abs(latitude * 1000 + longitude * 100)) % 2**31
+            )
+    
+            speed = self.default_speed + rng.uniform(-1.0, 1.0)
+            speed = max(speed, 0.5)
+    
+            direction = self.default_direction + rng.uniform(-30, 30)
+            direction = direction % 360
 
         # Wind components
         dir_rad = np.radians(direction)
@@ -81,7 +112,7 @@ class WindField:
             u_component=round(u, 3),
             v_component=round(v, 3),
             stability_class=stability,
-            source="synthetic",
+            source=source,
         )
 
     def get_wind_field_grid(

@@ -50,7 +50,7 @@ class MethaneHunterPipeline:
         self.detector = HotspotDetector(threshold_sigma=config.hotspot_threshold_sigma)
         self.tasking = TaskingSimulator()
         self.joiner = SpatialJoiner(radius_km=config.spatial_join_radius_km)
-        self.wind = WindField()
+        self.wind = WindField(use_live=not self.use_demo)
         self.inverter = PlumeInverter(stability_class="D")
         self.agent = ComplianceAuditAgent(
             model=config.ollama_model,
