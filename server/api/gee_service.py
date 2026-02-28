@@ -27,16 +27,29 @@ def _run_with_timeout(fn, timeout=GEE_CALL_TIMEOUT):
     """
     Run ``fn()`` in a thread.  Raises ``TimeoutError`` if it doesn't finish
     within ``timeout`` seconds, or re-raises any exception from ``fn``.
+
+    IMPORTANT: we must NOT use `with ThreadPoolExecutor() as executor` here.
+    The context-manager calls executor.shutdown(wait=True) on exit, which blocks
+    until the GEE HTTP retries finish — easily 40-60 s.  Instead we shut down
+    with wait=False so the TimeoutError propagates immediately.
     """
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(fn)
-        try:
-            return future.result(timeout=timeout)
-        except FuturesTimeoutError:
-            raise TimeoutError(
-                f'GEE call timed out after {timeout}s.'
-                ' Check Earth Engine authentication and network connectivity.'
-            )
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(fn)
+    try:
+        result = future.result(timeout=timeout)
+        executor.shutdown(wait=False)
+        return result
+    except FuturesTimeoutError:
+        # Abandon the thread — let it finish in the background without blocking.
+        future.cancel()
+        executor.shutdown(wait=False)
+        raise TimeoutError(
+            f'GEE call timed out after {timeout}s.'
+            ' Check Earth Engine authentication and network connectivity.'
+        )
+    except Exception:
+        executor.shutdown(wait=False)
+        raise
 
 # Load .env from server directory
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
@@ -81,13 +94,24 @@ def _ensure_init():
     """Initialize Earth Engine if not already done."""
     global _initialized
     if _initialized:
+        print('[GEE-SVC] Earth Engine already initialised ✔')
         return
+    print(f'[GEE-SVC] Initialising Earth Engine  project={GEE_PROJECT} ...')
     try:
         ee.Initialize(project=GEE_PROJECT)
-    except Exception:
-        ee.Authenticate()
-        ee.Initialize(project=GEE_PROJECT)
-    _initialized = True
+        _initialized = True
+        print('[GEE-SVC] ee.Initialize() succeeded ✔')
+    except Exception as init_exc:
+        print(f'[GEE-SVC] ee.Initialize() failed: {init_exc}')
+        print('[GEE-SVC] Attempting ee.Authenticate() ...')
+        try:
+            ee.Authenticate()
+            ee.Initialize(project=GEE_PROJECT)
+            _initialized = True
+            print('[GEE-SVC] ee.Authenticate() + ee.Initialize() succeeded ✔')
+        except Exception as auth_exc:
+            print(f'[GEE-SVC] ✗ Authentication FAILED: {auth_exc}')
+            raise
 
 
 def _get_ch4_image(days: int = 30, bbox: tuple = DEFAULT_BBOX):
@@ -184,7 +208,14 @@ def get_heatmap_points(
         num_points = DEFAULT_HEATMAP_NUM_POINTS
     if scale is None:
         scale = DEFAULT_HEATMAP_SCALE
+
+    print(f'\n[GEE-SVC] get_heatmap_points called')
+    print(f'[GEE-SVC]   days={days}  num_points={num_points}  scale={scale}')
+    print(f'[GEE-SVC]   bbox={bbox}')
+    print(f'[GEE-SVC]   GEE_CALL_TIMEOUT={GEE_CALL_TIMEOUT}s')
+
     image, region = _get_ch4_image(days, bbox)
+    print('[GEE-SVC]   CH4 image built, starting sample() call with timeout ...')
 
     # Sample points from the image — wrapped in a timeout so the server
     # never hangs indefinitely when GEE is slow or unreachable.
@@ -203,11 +234,14 @@ def get_heatmap_points(
         )
     except TimeoutError as exc:
         logger.warning('[GEE] Heatmap sample timed out: %s', exc)
+        print(f'[GEE-SVC] ✗ sample() TIMED OUT: {exc}')
         raise
     except Exception as exc:
         logger.warning('[GEE] Heatmap sample failed: %s', exc)
+        print(f'[GEE-SVC] ✗ sample() EXCEPTION  {type(exc).__name__}: {exc}')
         raise
     logger.debug('[GEE] Sample succeeded, got %d features', len(samples.get('features', [])))
+    print(f'[GEE-SVC] ✔ sample() returned {len(samples.get("features", []))} features')
 
     features = samples.get("features", [])
     if not features:
@@ -237,6 +271,12 @@ def get_heatmap_points(
 
     end_date = datetime.now()
     start_date = end_date - timedelta(days=days)
+
+    print(f'[GEE-SVC] CH4 stats  min={v_min:.2f}  max={v_max:.2f}  mean={v_mean:.2f}  std={v_std:.2f}  count={len(values)}')
+    print(f'[GEE-SVC] Normalised points: {len(points)}')
+    if points:
+        print(f'[GEE-SVC] Sample (first 3 norm pts): {points[:3]}')
+    print(f'[GEE-SVC] get_heatmap_points \u2714 returning\n')
 
     return {
         "points": points,

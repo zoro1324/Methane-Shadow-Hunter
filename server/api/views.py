@@ -741,7 +741,7 @@ def _run_pipeline_background(run_pk, mode, use_llm):
             print(_inf("Generating reports for top 3 attributed emitters …"))
             try:
                 from src.agent.reporting_agent import ComplianceAuditAgent
-                agent          = ComplianceAuditAgent(model=config.featherless_model, api_key=config.featherless_api_key, base_url=config.featherless_base_url)
+                agent          = ComplianceAuditAgent(model=config.ollama_model, base_url=config.ollama_base_url)
                 top_for_report = sorted(attributions, key=lambda a: a.emission_rate_kg_hr, reverse=True)[:3]
                 plume_map      = {p.plume_id: p for p in plumes}
                 reports        = agent.generate_batch_reports(top_for_report, plume_map)
@@ -1065,32 +1065,53 @@ def heatmap_fallback(request):
     """
     import numpy as np
 
+    print('\n[DB-FALLBACK] ─────────────────────────────────────────')
+    print('[DB-FALLBACK] heatmap_fallback called')
+
     raw_points = []  # [[lat, lng, raw_value], ...]
 
     # 1) MethaneHotspot.count → use as raw intensity proxy
-    for h in MethaneHotspot.objects.values_list('latitude', 'longitude', 'count'):
+    methane_qs = list(MethaneHotspot.objects.values_list('latitude', 'longitude', 'count'))
+    print(f'[DB-FALLBACK] MethaneHotspot total rows   : {len(methane_qs)}')
+    methane_added = 0
+    for h in methane_qs:
         if h[0] is not None and h[1] is not None and h[2] is not None:
             raw_points.append([float(h[0]), float(h[1]), float(h[2])])
+            methane_added += 1
+    print(f'[DB-FALLBACK] MethaneHotspot valid points : {methane_added}')
 
     # 2) DetectedHotspot.ch4_count
-    for d in DetectedHotspot.objects.values_list('latitude', 'longitude', 'ch4_count'):
+    detected_qs = list(DetectedHotspot.objects.values_list('latitude', 'longitude', 'ch4_count'))
+    print(f'[DB-FALLBACK] DetectedHotspot total rows  : {len(detected_qs)}')
+    detected_added = 0
+    for d in detected_qs:
         if d[0] is not None and d[1] is not None and d[2] is not None:
             raw_points.append([float(d[0]), float(d[1]), float(d[2])])
+            detected_added += 1
+    print(f'[DB-FALLBACK] DetectedHotspot valid points: {detected_added}')
 
     # 3) PlumeObservation.emission_rate_kg_hr (scaled to same order)
     plumes = list(PlumeObservation.objects.values_list(
         'latitude', 'longitude', 'emission_rate_kg_hr'
     ))
+    print(f'[DB-FALLBACK] PlumeObservation total rows : {len(plumes)}')
+    plume_added = 0
     if plumes:
         # Scale plume emission rates to roughly match hotspot counts
         max_count = max((p[2] for p in raw_points), default=1) if raw_points else 1
         max_plume = max((p[2] for p in plumes if p[2]), default=1)
         scale = max_count / max_plume if max_plume else 1
+        print(f'[DB-FALLBACK] Plume scale factor          : {scale:.6f}')
         for p in plumes:
             if p[0] is not None and p[1] is not None and p[2] is not None:
                 raw_points.append([float(p[0]), float(p[1]), float(p[2]) * scale])
+                plume_added += 1
+    print(f'[DB-FALLBACK] PlumeObservation valid pts  : {plume_added}')
+    print(f'[DB-FALLBACK] Total raw_points collected  : {len(raw_points)}')
 
     if not raw_points:
+        print('[DB-FALLBACK] ✗ No raw points — returning empty response')
+        print('[DB-FALLBACK] ─────────────────────────────────────────\n')
         return Response({
             'points': [], 'stats': {}, 'raw_points': [], 'source': 'database',
         })
@@ -1104,6 +1125,13 @@ def heatmap_fallback(request):
 
     # Normalise to 0-1
     points = [[p[0], p[1], (p[2] - v_min) / spread] for p in raw_points]
+
+    print(f'[DB-FALLBACK] Stats — min:{v_min:.2f}  max:{v_max:.2f}  mean:{v_mean:.2f}  std:{v_std:.2f}')
+    print(f'[DB-FALLBACK] Normalised points count     : {len(points)}')
+    if points:
+        print(f'[DB-FALLBACK] Sample (first 3 norm pts)   : {points[:3]}')
+    print('[DB-FALLBACK] ✔ Returning response')
+    print('[DB-FALLBACK] ─────────────────────────────────────────\n')
 
     return Response({
         'points': points,
@@ -1130,11 +1158,17 @@ def gee_ch4_tiles(request):
     """
     days = int(request.query_params.get('days', 30))
 
+    print(f'\n[GEE-TILES] ─────────────────────────────────────────')
+    print(f'[GEE-TILES] gee_ch4_tiles called  days={days}')
     try:
         from .gee_service import get_tile_url
         result = get_tile_url(days=days)
+        print(f'[GEE-TILES] ✔ tile_url generated: {str(result.get("tile_url", ""))[:80]}...')
+        print('[GEE-TILES] ─────────────────────────────────────────\n')
         return Response(result)
     except Exception as e:
+        print(f'[GEE-TILES] ✗ FAILED  {type(e).__name__}: {e}')
+        print('[GEE-TILES] ─────────────────────────────────────────\n')
         return Response(
             {'error': str(e), 'detail': 'GEE tile generation failed. Check Earth Engine authentication.'},
             status=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -1157,19 +1191,36 @@ def gee_ch4_heatmap(request):
     num_points = int(request.query_params.get('num_points', 1000))
     scale = int(request.query_params.get('scale', 20000))
 
+    print(f'\n[GEE-HEATMAP] ───────────────────────────────────────')
+    print(f'[GEE-HEATMAP] gee_ch4_heatmap called')
+    print(f'[GEE-HEATMAP] Input params  days={days}  num_points={num_points}  scale={scale}')
+
     try:
         from .gee_service import get_heatmap_points
         result = get_heatmap_points(days=days, num_points=num_points, scale=scale)
-        _log.info('[GEE] ch4-heatmap: returned %d points', len(result.get('points', [])))
+        n_pts = len(result.get('points', []))
+        _log.info('[GEE] ch4-heatmap: returned %d points', n_pts)
+        print(f'[GEE-HEATMAP] ✔ GEE returned {n_pts} points')
+        print(f'[GEE-HEATMAP] Stats  : {result.get("stats")}')
+        if result.get('points'):
+            print(f'[GEE-HEATMAP] Sample (first 3): {result["points"][:3]}')
+        print('[GEE-HEATMAP] ───────────────────────────────────────\n')
         return Response(result)
     except TimeoutError as e:
         _log.warning('[GEE] ch4-heatmap timed out: %s', e)
+        print(f'[GEE-HEATMAP] ✗ TIMEOUT after {e}')
+        print('[GEE-HEATMAP] ───────────────────────────────────────\n')
         return Response(
             {'error': 'timeout', 'detail': str(e)},
             status=status.HTTP_503_SERVICE_UNAVAILABLE,
         )
     except Exception as e:
         _log.warning('[GEE] ch4-heatmap failed (%s): %s', type(e).__name__, e)
+        import traceback as _tb
+        print(f'[GEE-HEATMAP] ✗ EXCEPTION  {type(e).__name__}: {e}')
+        print('[GEE-HEATMAP] Traceback:')
+        print(_tb.format_exc())
+        print('[GEE-HEATMAP] ───────────────────────────────────────\n')
         return Response(
             {'error': type(e).__name__, 'detail': str(e)},
             status=status.HTTP_503_SERVICE_UNAVAILABLE,

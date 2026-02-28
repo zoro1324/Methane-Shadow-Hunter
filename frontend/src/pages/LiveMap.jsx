@@ -77,7 +77,7 @@ const GEETileOverlay = ({ tileUrl }) => {
   return (
     <TileLayer
       url={tileUrl}
-      attribution="Copernicus Sentinel-5P / GEE"
+      attribution="Copernicus Sentinel-5P"
       opacity={0.65}
       zIndex={10}
     />
@@ -91,7 +91,7 @@ const LayerPanel = ({ layers, setLayers, onClose }) => {
 
   const layerDefs = [
     { key: 'heatmap', label: 'CH\u2084 Heatmap', desc: 'Sentinel-5P concentration', icon: Thermometer },
-    { key: 'geeTiles', label: 'GEE Tile Overlay', desc: 'Satellite raster tiles', icon: Layers },
+    { key: 'geeTiles', label: 'Satellite Overlay', desc: 'Sentinel-5P raster tiles', icon: Layers },
     { key: 'markers', label: 'Hotspot Markers', desc: 'Detected point locations', icon: MapPin },
     { key: 'circles', label: 'Emission Circles', desc: 'Emission intensity rings', icon: Activity },
   ]
@@ -354,6 +354,13 @@ const LiveMap = () => {
     setIsLoadingHeatmap(true)
     setHeatmapError(null)
 
+    console.groupCollapsed('%c[Heatmap] fetchHeatmapData started', 'color:#22d3ee;font-weight:bold')
+    console.log('[Heatmap] Firing 3 requests in parallel:')
+    console.log('  → GEE heatmap  : GET /api/gee/ch4-heatmap/?days=30&num_points=1000&scale=20000')
+    console.log('  → GEE tiles    : GET /api/gee/ch4-tiles/?days=30')
+    console.log('  → DB fallback  : GET /api/heatmap/fallback/')
+    const t0 = performance.now()
+
     // All three requests fire simultaneously.
     // GEE heatmap has a 12 s timeout so the DB fallback wins immediately
     // when GEE is unavailable – no sequential wait.
@@ -363,31 +370,85 @@ const LiveMap = () => {
       heatmapFallbackService.getPoints(),
     ])
 
+    const elapsed = (performance.now() - t0).toFixed(0)
+    console.log(`[Heatmap] All requests settled in ${elapsed} ms`)
+
+    // ── Log each result ───────────────────────────────────────────────
+    console.group('[Heatmap] GEE ch4-heatmap result')
+    console.log('  status :', heatmapRes.status)
+    if (heatmapRes.status === 'fulfilled') {
+      const v = heatmapRes.value
+      console.log('  points returned :', v?.points?.length ?? 0)
+      console.log('  stats           :', v?.stats)
+      if (v?.points?.length > 0) console.log('  first 3 points  :', v.points.slice(0, 3))
+    } else {
+      console.error('  REJECTED – reason:', heatmapRes.reason?.message ?? heatmapRes.reason)
+      console.error('  axios response  :', heatmapRes.reason?.response?.data)
+      console.error('  HTTP status     :', heatmapRes.reason?.response?.status)
+    }
+    console.groupEnd()
+
+    console.group('[Heatmap] GEE ch4-tiles result')
+    console.log('  status :', tileRes.status)
+    if (tileRes.status === 'fulfilled') {
+      console.log('  tile_url :', tileRes.value?.tile_url ?? '(none)')
+    } else {
+      console.error('  REJECTED – reason:', tileRes.reason?.message ?? tileRes.reason)
+      console.error('  HTTP status     :', tileRes.reason?.response?.status)
+      console.error('  response data   :', tileRes.reason?.response?.data)
+    }
+    console.groupEnd()
+
+    console.group('[Heatmap] DB fallback result')
+    console.log('  status :', fallbackRes.status)
+    if (fallbackRes.status === 'fulfilled') {
+      const v = fallbackRes.value
+      console.log('  points returned :', v?.points?.length ?? 0)
+      console.log('  source          :', v?.source)
+      console.log('  stats           :', v?.stats)
+      if (v?.points?.length > 0) console.log('  first 3 points  :', v.points.slice(0, 3))
+    } else {
+      console.error('  REJECTED – reason:', fallbackRes.reason?.message ?? fallbackRes.reason)
+      console.error('  HTTP status     :', fallbackRes.reason?.response?.status)
+      console.error('  response data   :', fallbackRes.reason?.response?.data)
+    }
+    console.groupEnd()
+
     // ── GEE tile overlay (independent of heatmap) ───────────────────
     if (tileRes.status === 'fulfilled' && tileRes.value?.tile_url) {
+      console.log('[Heatmap] ✔ GEE tile overlay URL set')
       setGeeTileUrl(tileRes.value.tile_url)
+    } else {
+      console.warn('[Heatmap] ✗ GEE tile overlay not available')
     }
 
     // ── Prefer GEE heatmap; fall back to DB instantly ────────────────
     const geeOk = heatmapRes.status === 'fulfilled' && heatmapRes.value?.points?.length > 0
     const dbOk  = fallbackRes.status === 'fulfilled' && fallbackRes.value?.points?.length > 0
 
+    console.log('[Heatmap] Decision flags — geeOk:', geeOk, ' dbOk:', dbOk)
+
     if (geeOk) {
       // GEE data is fresh satellite data – use it
+      console.log('%c[Heatmap] ✔ Using LIVE GEE data', 'color:#22c55e;font-weight:bold',
+        heatmapRes.value.points.length, 'points')
       setHeatmapPoints(heatmapRes.value.points)
       setHeatmapStats(heatmapRes.value.stats)
     } else if (dbOk) {
-      // GEE unavailable – DB fallback already finished in parallel
+      // Satellite unavailable – DB fallback already finished in parallel
+      console.warn('%c[Heatmap] ⚠ Using DB fallback data', 'color:#f59e0b;font-weight:bold',
+        fallbackRes.value.points.length, 'points')
       setHeatmapPoints(fallbackRes.value.points)
       setHeatmapStats(fallbackRes.value.stats)
-      setHeatmapError('GEE unavailable – showing heatmap from local data')
     } else {
-      // Both GEE and backend unavailable – use embedded CSV-derived demo data
+      // Both satellite and backend unavailable – use embedded CSV-derived demo data
+      console.warn('%c[Heatmap] Using embedded demo data', 'color:#f59e0b;font-weight:bold',
+        mockHeatmapPoints.length, 'points')
       setHeatmapPoints(mockHeatmapPoints)
       setHeatmapStats({ mean: 1847, std: 42, min: 1800, max: 1950, count: mockHeatmapPoints.length })
-      setHeatmapError('Backend unavailable – showing demo heatmap (India hotspots)')
     }
 
+    console.groupEnd()
     setIsLoadingHeatmap(false)
   }, [])
 
@@ -719,7 +780,7 @@ const LiveMap = () => {
           <div className="glass-card p-6 flex items-center gap-3">
             <RefreshCw className="w-5 h-5 text-accent-green animate-spin" />
             <span className="text-white">
-              {isLoadingHeatmap ? 'Loading heatmap from Google Earth Engine...' : 'Refreshing data...'}
+              {isLoadingHeatmap ? 'Loading satellite heatmap...' : 'Refreshing data...'}
             </span>
           </div>
         </div>
