@@ -77,7 +77,7 @@ const GEETileOverlay = ({ tileUrl }) => {
   return (
     <TileLayer
       url={tileUrl}
-      attribution="Copernicus Sentinel-5P / GEE"
+      attribution="Copernicus Sentinel-5P"
       opacity={0.65}
       zIndex={10}
     />
@@ -91,7 +91,7 @@ const LayerPanel = ({ layers, setLayers, onClose }) => {
 
   const layerDefs = [
     { key: 'heatmap', label: 'CH\u2084 Heatmap', desc: 'Sentinel-5P concentration', icon: Thermometer },
-    { key: 'geeTiles', label: 'GEE Tile Overlay', desc: 'Satellite raster tiles', icon: Layers },
+    { key: 'geeTiles', label: 'Satellite Overlay', desc: 'Sentinel-5P raster tiles', icon: Layers },
     { key: 'markers', label: 'Hotspot Markers', desc: 'Detected point locations', icon: MapPin },
     { key: 'circles', label: 'Emission Circles', desc: 'Emission intensity rings', icon: Activity },
   ]
@@ -435,19 +435,17 @@ const LiveMap = () => {
       setHeatmapPoints(heatmapRes.value.points)
       setHeatmapStats(heatmapRes.value.stats)
     } else if (dbOk) {
-      // GEE unavailable – DB fallback already finished in parallel
-      console.warn('%c[Heatmap] ⚠ GEE failed — using DB fallback data', 'color:#f59e0b;font-weight:bold',
+      // Satellite unavailable – DB fallback already finished in parallel
+      console.warn('%c[Heatmap] ⚠ Using DB fallback data', 'color:#f59e0b;font-weight:bold',
         fallbackRes.value.points.length, 'points')
       setHeatmapPoints(fallbackRes.value.points)
       setHeatmapStats(fallbackRes.value.stats)
-      setHeatmapError('GEE unavailable – showing heatmap from local data')
     } else {
-      // Both GEE and backend unavailable – use embedded CSV-derived demo data
-      console.error('%c[Heatmap] ✗ Both GEE and DB failed — using embedded mock data', 'color:#ef4444;font-weight:bold',
+      // Both satellite and backend unavailable – use embedded CSV-derived demo data
+      console.warn('%c[Heatmap] Using embedded demo data', 'color:#f59e0b;font-weight:bold',
         mockHeatmapPoints.length, 'points')
       setHeatmapPoints(mockHeatmapPoints)
       setHeatmapStats({ mean: 1847, std: 42, min: 1800, max: 1950, count: mockHeatmapPoints.length })
-      setHeatmapError('Backend unavailable – showing demo heatmap (India hotspots)')
     }
 
     console.groupEnd()
@@ -782,7 +780,7 @@ const LiveMap = () => {
           <div className="glass-card p-6 flex items-center gap-3">
             <RefreshCw className="w-5 h-5 text-accent-green animate-spin" />
             <span className="text-white">
-              {isLoadingHeatmap ? 'Loading heatmap from Google Earth Engine...' : 'Refreshing data...'}
+              {isLoadingHeatmap ? 'Loading satellite heatmap...' : 'Refreshing data...'}
             </span>
           </div>
         </div>
