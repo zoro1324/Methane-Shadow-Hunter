@@ -1408,8 +1408,10 @@ def _store_raw_hotspots(hotspots_df):
 
 
 def _store_detected_hotspots(detected, run):
-    """Store detected hotspot results."""
-    objs = []
+    """Store detected hotspot results and fire Twilio SMS alerts."""
+    objs          = []
+    alert_targets = []   # keep references whose requires_highres=True for SMS
+
     for d in detected:
         if d.requires_highres:
             objs.append(DetectedHotspot(
@@ -1423,8 +1425,28 @@ def _store_detected_hotspots(detected, run):
                 priority=d.priority,
                 pipeline_run=run,
             ))
+            alert_targets.append(d)
+
     if objs:
         DetectedHotspot.objects.bulk_create(objs, ignore_conflicts=True)
+
+    # ── SMS alerts via Twilio ────────────────────────────────────────────
+    if alert_targets:
+        try:
+            from .sms_alerts import send_detections_batch
+            result = send_detections_batch(
+                alert_targets,
+                run_pk=run.pk if run else None,
+            )
+            print(
+                _pc(
+                    f"  [SMS] Alerts dispatched: {result['sent']} sent, "
+                    f"{result['failed']} failed  (total detections: {result['total']})",
+                    _C.GREEN if result['failed'] == 0 else _C.YELLOW,
+                )
+            )
+        except Exception as _sms_exc:
+            print(_pc(f"  [SMS] Alert dispatch error: {_sms_exc}", _C.YELLOW))
 
 
 def _store_tasking_requests(requests, run):

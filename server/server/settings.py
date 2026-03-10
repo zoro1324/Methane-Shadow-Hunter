@@ -212,3 +212,9 @@ LOGGING = {
         'level': 'WARNING',
     },
 }
+
+# ─── Twilio SMS Alert Configuration ──────────────────────────────────────────
+TWILIO_ACCOUNT_SID    = os.getenv('TWILIO_ACCOUNT_SID', '')
+TWILIO_AUTH_TOKEN     = os.getenv('TWILIO_AUTH_TOKEN', '')
+TWILIO_PHONE_NUMBER   = os.getenv('TWILIO_PHONE_NUMBER', '')
+TWILIO_ALERT_RECIPIENT = os.getenv('TWILIO_ALERT_RECIPIENT', '')
