@@ -1,10 +1,13 @@
 """
 Oil & Gas Infrastructure Database.
 
-Loads facility data from GOGI/OGIM or generates synthetic
-infrastructure points for India for demo purposes.
+Loads facility data from the Django Facility table by default.
+Falls back to file-based loading or synthetic infrastructure
+when database access is unavailable.
 """
 
+import os
+import sys
 import numpy as np
 import pandas as pd
 from dataclasses import dataclass
@@ -32,8 +35,9 @@ class InfrastructureDB:
     Oil & Gas Infrastructure facility database.
     
     Supports:
-    1. Loading from GeoJSON/CSV files (GOGI/OGIM exports)
-    2. Synthetic facility generation for India demo
+    1. Loading from Django Facility table (database-first)
+    2. Loading from CSV/GeoJSON fallback files
+    3. Synthetic facility generation for emergency fallback
     """
 
     # Known Indian O&G infrastructure regions (approximate)
@@ -72,21 +76,69 @@ class InfrastructureDB:
         "Vedanta Resources", "GSPC", "Essar Oil",
     ]
 
-    def __init__(self, data_path: Optional[Path] = None):
+    def __init__(self, data_path: Optional[Path] = None, use_database: bool = True):
         self.data_path = data_path
+        self.use_database = use_database
         self._facilities: Optional[list[Facility]] = None
+        self.last_source: str = "uninitialized"
 
     def load_facilities(self) -> list[Facility]:
         """Load or generate facilities."""
         if self._facilities is not None:
             return self._facilities
 
+        if self.use_database:
+            db_facilities = self._load_from_database()
+            if db_facilities:
+                self.last_source = "database"
+                self._facilities = db_facilities
+                return self._facilities
+
         if self.data_path and self.data_path.exists():
+            self.last_source = "file"
             self._facilities = self._load_from_file()
         else:
+            self.last_source = "synthetic"
             self._facilities = self._generate_synthetic()
 
         return self._facilities
+
+    def _load_from_database(self) -> list[Facility]:
+        """Load facilities from Django Facility model when available."""
+        try:
+            project_root = Path(__file__).resolve().parents[2]
+            server_root = project_root / "server"
+            if str(server_root) not in sys.path:
+                sys.path.insert(0, str(server_root))
+
+            os.environ.setdefault("DJANGO_SETTINGS_MODULE", "server.settings")
+
+            import django
+            from django.apps import apps
+
+            if not apps.ready:
+                django.setup()
+
+            from api.models import Facility as DbFacility
+
+            rows = list(DbFacility.objects.all())
+            return [
+                Facility(
+                    facility_id=row.facility_id,
+                    name=row.name,
+                    facility_type=row.type,
+                    latitude=float(row.latitude),
+                    longitude=float(row.longitude),
+                    operator=row.operator,
+                    country=row.country,
+                    state=row.state or "Unknown",
+                    status=row.status,
+                )
+                for row in rows
+            ]
+        except Exception as e:
+            print(f"[InfrastructureDB] DB load failed: {e}. Falling back.")
+            return []
 
     def _load_from_file(self) -> list[Facility]:
         """Load facilities from CSV or GeoJSON."""

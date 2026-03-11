@@ -101,7 +101,7 @@ class MethaneHunterPipeline:
         # Initialize components
         self.s5p_client = Sentinel5PClient()
         self.cm_client = CarbonMapperClient()
-        self.infra_db = InfrastructureDB(data_path=config.dataset_dir / "demo_industries.csv")
+        self.infra_db = InfrastructureDB(use_database=True)
         self.detector = HotspotDetector(threshold_sigma=config.hotspot_threshold_sigma)
         self.tasking = TaskingSimulator()
         self.joiner = SpatialJoiner(radius_km=config.spatial_join_radius_km)
@@ -306,12 +306,12 @@ class MethaneHunterPipeline:
         # ════════════════════════════════════════════════════════════════════
         t0 = _step_banner(5)
 
-        src = self.infra_db.data_path.name if (self.infra_db.data_path and self.infra_db.data_path.exists()) else "built-in registry"
-        print(_info(f"Infrastructure source : {src}"))
         print(_info(f"Join algorithm        : Haversine distance ≤ {self.joiner.radius_km} km"))
         print(_info("Loading facilities and computing nearest-neighbour distances …"))
 
         facilities = self.infra_db.load_facilities()
+        src = getattr(self.infra_db, "last_source", "unknown")
+        print(_info(f"Infrastructure source : {src}"))
         print(_ok(f"Loaded {len(facilities)} infrastructure facilities"))
 
         fac_types = {}
