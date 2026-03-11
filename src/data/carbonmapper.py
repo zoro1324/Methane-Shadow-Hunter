@@ -75,7 +75,7 @@ class CarbonMapperClient:
             "bbox": ",".join(str(b) for b in bbox),
             "datetime": f"{date_start}/{date_end}",
             "limit": limit,
-            "collections": "emit-ch4plume-v1",
+            "collections": "l4a-ch4-mfa-v3a",
         }
 
         try:
@@ -90,38 +90,64 @@ class CarbonMapperClient:
             print("[CarbonMapper] Falling back to synthetic plume data.")
             return []
 
+    # IPCC sector code → readable sector label
+    _IPCC_SECTOR_MAP = {
+        "1A": "combustion",
+        "1B": "oil_gas",
+        "1B1": "coal_mine",
+        "1B2": "oil_gas",
+        "1B3": "oil_gas",
+        "4": "agriculture",
+        "4A": "agriculture",
+        "4B": "agriculture",
+        "4C": "agriculture",
+        "4D": "agriculture",
+        "5": "landfill",
+        "6": "landfill",
+        "6A": "landfill",
+        "6B": "wastewater",
+    }
+
+    def _map_sector(self, code: str) -> str:
+        code = (code or "").strip().upper()
+        return self._IPCC_SECTOR_MAP.get(code, "oil_gas")
+
     def _parse_stac_features(self, features: list) -> list[PlumeObservation]:
-        """Parse STAC GeoJSON features into PlumeObservation objects."""
+        """Parse STAC GeoJSON features (l4a-ch4-mfa-v3a schema) into PlumeObservation objects."""
         plumes = []
         for feat in features:
             props = feat.get("properties", {})
-            geom = feat.get("geometry", {})
-            coords = geom.get("coordinates", [0, 0])
+            geom  = feat.get("geometry", {})
 
-            # Handle different geometry types
-            if geom.get("type") == "Point":
-                lon, lat = coords[0], coords[1]
-            elif geom.get("type") == "Polygon":
-                # Use centroid of first ring
-                ring = coords[0]
-                lon = np.mean([c[0] for c in ring])
-                lat = np.mean([c[1] for c in ring])
-            else:
-                lon, lat = coords[0] if coords else 0, coords[1] if len(coords) > 1 else 0
+            # Prefer precise plume centroid from properties (more accurate than polygon centroid)
+            lat = props.get("cm:plume_latitude") or props.get("cm:plume:latitude")
+            lon = props.get("cm:plume_longitude") or props.get("cm:plume:longitude")
+
+            if lat is None or lon is None:
+                # Fall back to geometry centroid
+                coords = geom.get("coordinates", [[0, 0]])
+                if geom.get("type") == "Point":
+                    lon, lat = coords[0], coords[1]
+                elif geom.get("type") == "Polygon":
+                    ring = coords[0]
+                    lon = float(np.mean([c[0] for c in ring]))
+                    lat = float(np.mean([c[1] for c in ring]))
+                else:
+                    lon, lat = 0.0, 0.0
 
             plumes.append(
                 PlumeObservation(
                     plume_id=feat.get("id", "unknown"),
-                    latitude=lat,
-                    longitude=lon,
-                    emission_rate_kg_hr=props.get("Emission", props.get("emission_rate", 0.0)),
-                    emission_uncertainty=props.get("Emission Uncertainty", 0.0),
-                    plume_length_m=props.get("Plume Length (m)", props.get("plume_length", 0.0)),
-                    wind_speed_ms=props.get("Wind Speed (m/s)", props.get("wind_speed", 3.0)),
-                    wind_direction_deg=props.get("Wind Direction", props.get("wind_dir", 0.0)),
-                    acquisition_date=props.get("datetime", props.get("acquisition_date", "")),
-                    quality_flag=props.get("quality_flag", "good"),
-                    sector=props.get("sector", "oil_gas"),
+                    latitude=round(float(lat), 6),
+                    longitude=round(float(lon), 6),
+                    emission_rate_kg_hr=float(props.get("cm:emission", 0.0) or 0.0),
+                    emission_uncertainty=float(props.get("cm:emission_uncertainty", 0.0) or 0.0),
+                    plume_length_m=0.0,  # not available in l4a schema
+                    wind_speed_ms=float(props.get("cm:wind_speed_avg", 3.0) or 3.0),
+                    wind_direction_deg=float(props.get("cm:wind_direction_avg", 0.0) or 0.0),
+                    acquisition_date=props.get("datetime", ""),
+                    quality_flag="good",
+                    sector=self._map_sector(props.get("cm:plume:sector", "1B2")),
                     source="carbonmapper",
                 )
             )

@@ -94,8 +94,8 @@ class MethaneHunterPipeline:
     Complete methane detection and attribution pipeline.
     """
 
-    def __init__(self, use_demo: bool = True, use_llm: bool = True):
-        self.use_demo = use_demo
+    def __init__(self, use_demo: bool = None, use_llm: bool = True):
+        self.use_demo = config.use_demo_data if use_demo is None else use_demo
         self.use_llm = use_llm
 
         # Initialize components
@@ -266,8 +266,8 @@ class MethaneHunterPipeline:
         else:
             from datetime import datetime as _dt, timedelta
             end_date_str   = _dt.now().strftime('%Y-%m-%d')
-            start_date_str = (_dt.now() - timedelta(days=30)).strftime('%Y-%m-%d')
-            print(_info(f"Querying CarbonMapper STAC  {start_date_str} → {end_date_str}"))
+            start_date_str = (_dt.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+            print(_info(f"Querying CarbonMapper STAC  {start_date_str} → {end_date_str}  (365-day window)"))
             plumes = self.cm_client.search_plumes(
                 bbox=config.aoi_bbox, date_start=start_date_str, date_end=end_date_str)
             if not plumes:
