@@ -619,8 +619,8 @@ def _run_pipeline_background(run_pk, mode, use_llm):
         else:
             from datetime import timedelta
             end_date   = datetime.now().strftime('%Y-%m-%d')
-            start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
-            print(_inf(f"Querying CarbonMapper STAC  {start_date} → {end_date}"))
+            start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+            print(_inf(f"Querying CarbonMapper STAC  {start_date} → {end_date}  (365-day window)"))
             plumes = cm.search_plumes(bbox=config.aoi_bbox, date_start=start_date, date_end=end_date)
             if not plumes:
                 print(_warn("STAC returned 0 results (tasking lag). Falling back to synthetic."))
