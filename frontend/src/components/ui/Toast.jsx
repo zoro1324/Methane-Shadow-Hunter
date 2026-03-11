@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, createContext, useContext } from 'react'
+import { useState, useEffect, useCallback, useRef, createContext, useContext } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, CheckCircle, AlertTriangle, XCircle, Info } from 'lucide-react'
 
@@ -9,8 +9,6 @@ import { X, CheckCircle, AlertTriangle, XCircle, Info } from 'lucide-react'
 
 // ─── Toast Context ──────────────────────────────────────────────────────────
 const ToastContext = createContext(null)
-
-let toastIdCounter = 0
 
 const ICONS = {
   success: CheckCircle,
@@ -99,13 +97,14 @@ const ToastItem = ({ toast, onRemove }) => {
 // ─── Toast Provider ─────────────────────────────────────────────────────────
 export const ToastProvider = ({ children }) => {
   const [toasts, setToasts] = useState([])
+  const idRef = useRef(0) // Issue #6: scoped counter instead of module-level
 
   const removeToast = useCallback((id) => {
     setToasts((prev) => prev.filter((t) => t.id !== id))
   }, [])
 
   const addToast = useCallback(({ type = 'info', title, message, duration = 5000 }) => {
-    const id = ++toastIdCounter
+    const id = ++idRef.current
     setToasts((prev) => [...prev, { id, type, title, message, duration }])
     return id
   }, [])

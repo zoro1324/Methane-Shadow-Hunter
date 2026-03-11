@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
@@ -44,6 +44,13 @@ const Dashboard = () => {
   const [pipelineMsg, setPipelineMsg] = useState('')
   const [modeMenuOpen, setModeMenuOpen] = useState(false)
 
+  // Issue #2: isMounted guard to prevent setState on unmounted component
+  const isMounted = useRef(true)
+  useEffect(() => {
+    isMounted.current = true
+    return () => { isMounted.current = false }
+  }, [])
+
   const fetchDashboardData = async () => {
     setLoading(true)
     setError(null)
@@ -52,13 +59,15 @@ const Dashboard = () => {
         dashboardService.getSummary(),
         dashboardService.getTrend(),
       ])
-      setSummary(summaryData)
-      setTrend(Array.isArray(trendData) ? trendData : [])
+      if (isMounted.current) {
+        setSummary(summaryData)
+        setTrend(Array.isArray(trendData) ? trendData : [])
+      }
     } catch (err) {
       console.error('Dashboard fetch error:', err)
-      setError('Failed to load dashboard data. Is the backend running?')
+      if (isMounted.current) setError('Failed to load dashboard data. Is the backend running?')
     } finally {
-      setLoading(false)
+      if (isMounted.current) setLoading(false)
     }
   }
 
