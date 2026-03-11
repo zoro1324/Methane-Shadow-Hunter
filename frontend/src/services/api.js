@@ -28,6 +28,10 @@ apiClient.interceptors.response.use(
   (error) => {
     if (error.response?.status === 401) {
       localStorage.removeItem('authToken')
+      // Issue #7: Auto-redirect to login on 401 (token expired / invalid)
+      if (window.location.pathname !== '/login' && window.location.pathname !== '/signup') {
+        window.location.href = '/login'
+      }
     }
     return Promise.reject(error)
   },
@@ -35,8 +39,9 @@ apiClient.interceptors.response.use(
 
 // ─── Helper: unwrap paginated DRF response ───────────────────────────────
 const unwrap = (res) => {
-  // DRF pagination wraps results in { count, next, previous, results }
+  // Issue #8: Handle paginated, array, and plain object responses
   if (res.data?.results !== undefined) return res.data.results
+  if (Array.isArray(res.data)) return res.data
   return res.data
 }
 

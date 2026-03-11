@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
+import { useState, useEffect, useRef } from 'react'
+import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   LayoutDashboard,
@@ -16,6 +16,7 @@ import {
   Settings,
   LogOut,
 } from 'lucide-react'
+import { authService, detectedHotspotsService } from '../../services/api'
 
 /**
  * DashboardLayout Component
@@ -27,6 +28,56 @@ const DashboardLayout = () => {
   const [profileDropdown, setProfileDropdown] = useState(false)
   const [notificationOpen, setNotificationOpen] = useState(false)
   const location = useLocation()
+  const navigate = useNavigate()
+
+  // Issue #14: refs for outside-click detection
+  const notifRef = useRef(null)
+  const profileRef = useRef(null)
+
+  // Issue #11: Live notifications from backend
+  const [notifications, setNotifications] = useState([])
+  useEffect(() => {
+    const fetchNotifications = async () => {
+      try {
+        const hotspots = await detectedHotspotsService.getAll({ ordering: '-anomaly_score', page_size: 5 })
+        const list = (Array.isArray(hotspots) ? hotspots : []).slice(0, 5).map((h, i) => ({
+          id: h.id || i,
+          title: h.severity === 'Critical' ? 'Super-Emitter Detected' :
+                 h.severity === 'High' ? 'Emission Spike Alert' :
+                 'Hotspot Detected',
+          time: h.detected_at ? new Date(h.detected_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Recently',
+          type: h.severity === 'Critical' ? 'critical' : h.severity === 'High' ? 'warning' : 'info',
+        }))
+        setNotifications(list)
+      } catch {
+        // Gracefully keep empty if API unavailable
+      }
+    }
+    fetchNotifications()
+  }, [])
+
+  // Issue #14: Close dropdowns on outside click
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (notifRef.current && !notifRef.current.contains(e.target)) {
+        setNotificationOpen(false)
+      }
+      if (profileRef.current && !profileRef.current.contains(e.target)) {
+        setProfileDropdown(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  // Issue #10: Logout handler
+  const handleLogout = () => {
+    authService.logout()
+    navigate('/login')
+  }
+
+  // Get stored user info
+  const currentUser = authService.getUser()
 
   // Navigation items configuration
   const navItems = [
@@ -35,13 +86,6 @@ const DashboardLayout = () => {
     { path: '/dashboard/super-emitters', icon: AlertTriangle, label: 'Super Emitters' },
     { path: '/dashboard/reports', icon: FileText, label: 'Reports' },
     { path: '/dashboard/alerts', icon: Bell, label: 'Alerts' },
-  ]
-
-  // Mock notifications
-  const notifications = [
-    { id: 1, title: 'Super-Emitter Detected', time: '5 min ago', type: 'critical' },
-    { id: 2, title: 'Emission Spike Alert', time: '1 hour ago', type: 'warning' },
-    { id: 3, title: 'Report Generated', time: '2 hours ago', type: 'info' },
   ]
 
   return (
@@ -79,6 +123,10 @@ const DashboardLayout = () => {
                   className={({ isActive }) =>
                     `sidebar-link ${isActive ? 'active' : ''}`
                   }
+                  onClick={() => {
+                    // Auto-close sidebar on mobile
+                    if (window.innerWidth < 1024) setSidebarOpen(false)
+                  }}
                 >
                   <item.icon className="w-5 h-5" />
                   <span>{item.label}</span>
@@ -147,15 +195,17 @@ const DashboardLayout = () => {
             </div>
 
             {/* Notifications */}
-            <div className="relative">
+            <div className="relative" ref={notifRef}>
               <button
                 onClick={() => setNotificationOpen(!notificationOpen)}
                 className="relative p-2 hover:bg-dark-border rounded-lg transition-colors"
               >
                 <Bell className="w-5 h-5 text-gray-400" />
-                <span className="absolute -top-0.5 -right-0.5 w-4 h-4 bg-danger-red text-white text-xs rounded-full flex items-center justify-center">
-                  3
-                </span>
+                {notifications.length > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 w-4 h-4 bg-danger-red text-white text-xs rounded-full flex items-center justify-center">
+                    {notifications.length}
+                  </span>
+                )}
               </button>
 
               {/* Notifications Dropdown */}
@@ -171,28 +221,32 @@ const DashboardLayout = () => {
                       <h3 className="font-semibold text-white">Notifications</h3>
                     </div>
                     <div className="max-h-80 overflow-y-auto">
-                      {notifications.map((notification) => (
-                        <div
-                          key={notification.id}
-                          className="p-4 border-b border-dark-border/50 hover:bg-dark-border/30 cursor-pointer transition-colors"
-                        >
-                          <div className="flex items-start gap-3">
-                            <div
-                              className={`w-2 h-2 mt-2 rounded-full ${
-                                notification.type === 'critical'
-                                  ? 'bg-danger-red'
-                                  : notification.type === 'warning'
-                                  ? 'bg-warning-yellow'
-                                  : 'bg-info-blue'
-                              }`}
-                            />
-                            <div>
-                              <p className="text-sm text-white">{notification.title}</p>
-                              <p className="text-xs text-gray-500 mt-1">{notification.time}</p>
+                      {notifications.length === 0 ? (
+                        <div className="p-4 text-center text-gray-500 text-sm">No notifications</div>
+                      ) : (
+                        notifications.map((notification) => (
+                          <div
+                            key={notification.id}
+                            className="p-4 border-b border-dark-border/50 hover:bg-dark-border/30 cursor-pointer transition-colors"
+                          >
+                            <div className="flex items-start gap-3">
+                              <div
+                                className={`w-2 h-2 mt-2 rounded-full ${
+                                  notification.type === 'critical'
+                                    ? 'bg-danger-red'
+                                    : notification.type === 'warning'
+                                    ? 'bg-warning-yellow'
+                                    : 'bg-info-blue'
+                                }`}
+                              />
+                              <div>
+                                <p className="text-sm text-white">{notification.title}</p>
+                                <p className="text-xs text-gray-500 mt-1">{notification.time}</p>
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      ))}
+                        ))
+                      )}
                     </div>
                     <div className="p-3 text-center">
                       <Link
@@ -209,7 +263,7 @@ const DashboardLayout = () => {
             </div>
 
             {/* Profile Dropdown */}
-            <div className="relative">
+            <div className="relative" ref={profileRef}>
               <button
                 onClick={() => setProfileDropdown(!profileDropdown)}
                 className="flex items-center gap-2 p-1.5 hover:bg-dark-border rounded-lg transition-colors"
@@ -217,7 +271,7 @@ const DashboardLayout = () => {
                 <div className="w-8 h-8 rounded-full bg-accent-green/20 flex items-center justify-center">
                   <User className="w-4 h-4 text-accent-green" />
                 </div>
-                <span className="hidden sm:block text-sm text-gray-300">Admin</span>
+                <span className="hidden sm:block text-sm text-gray-300">{currentUser?.username || 'Admin'}</span>
                 <ChevronDown className="w-4 h-4 text-gray-500" />
               </button>
 
@@ -239,7 +293,10 @@ const DashboardLayout = () => {
                         Settings
                       </button>
                       <div className="border-t border-dark-border my-2" />
-                      <button className="w-full flex items-center gap-3 px-3 py-2 text-sm text-danger-red hover:bg-dark-border rounded-lg transition-colors">
+                      <button
+                        onClick={handleLogout}
+                        className="w-full flex items-center gap-3 px-3 py-2 text-sm text-danger-red hover:bg-dark-border rounded-lg transition-colors"
+                      >
                         <LogOut className="w-4 h-4" />
                         Sign Out
                       </button>

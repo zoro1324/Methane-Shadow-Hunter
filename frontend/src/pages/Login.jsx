@@ -30,7 +30,9 @@ const Login = () => {
   // ─── Handle input change ──────────────────────────────────────────────
   const handleChange = (e) => {
     const { name, value } = e.target
-    setForm((prev) => ({ ...prev, [name]: value }))
+    // Issue #15: Trim leading whitespace from username
+    const trimmed = name === 'username' ? value.trimStart() : value
+    setForm((prev) => ({ ...prev, [name]: trimmed }))
     // Clear field-level error on change
     if (errors[name]) setErrors((prev) => ({ ...prev, [name]: '' }))
   }

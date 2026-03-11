@@ -52,7 +52,7 @@ const Signup = () => {
     if (!form.username.trim()) errs.username = 'Username is required.'
     else if (form.username.trim().length < 3) errs.username = 'Username must be at least 3 characters.'
     if (!form.email.trim()) errs.email = 'Email is required.'
-    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) errs.email = 'Enter a valid email address.'
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(form.email)) errs.email = 'Enter a valid email address.'
     if (!form.password) errs.password = 'Password is required.'
     else if (form.password.length < 8) errs.password = 'Password must be at least 8 characters.'
     if (!form.confirm_password) errs.confirm_password = 'Please confirm your password.'
@@ -334,16 +334,27 @@ const Signup = () => {
                   {showConfirm ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
                 </button>
               </div>
-              {/* Match indicator */}
-              {form.confirm_password && form.password === form.confirm_password && (
-                <motion.p
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="mt-1.5 text-xs text-emerald-400 flex items-center gap-1"
-                >
-                  <Check className="w-3 h-3" />
-                  Passwords match
-                </motion.p>
+              {/* Issue #21: Real-time password match/mismatch indicator */}
+              {form.confirm_password && (
+                form.password === form.confirm_password ? (
+                  <motion.p
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    className="mt-1.5 text-xs text-emerald-400 flex items-center gap-1"
+                  >
+                    <Check className="w-3 h-3" />
+                    Passwords match
+                  </motion.p>
+                ) : (
+                  <motion.p
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    className="mt-1.5 text-xs text-red-400 flex items-center gap-1"
+                  >
+                    <span className="inline-block w-1 h-1 rounded-full bg-red-400" />
+                    Passwords do not match
+                  </motion.p>
+                )
               )}
               <FieldError msg={errors.confirm_password} />
             </div>
