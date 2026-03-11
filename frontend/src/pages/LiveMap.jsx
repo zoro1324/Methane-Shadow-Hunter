@@ -14,8 +14,10 @@ import {
   Navigation2,
   Crosshair,
   Thermometer,
+  Building2,
+  Sparkles,
 } from 'lucide-react'
-import { geeService, geojsonService, detectedHotspotsService, heatmapFallbackService } from '../services/api'
+import { geeService, geojsonService, facilitiesService, heatmapFallbackService, detectedHotspotsService } from '../services/api'
 import { StatusBadge } from '../components/ui/AlertCard'
 import HeatmapLayer from '../components/map/HeatmapLayer'
 import { mockHeatmapPoints } from '../data/mockData'
@@ -92,8 +94,8 @@ const LayerPanel = ({ layers, setLayers, onClose }) => {
   const layerDefs = [
     { key: 'heatmap', label: 'CH\u2084 Heatmap', desc: 'Sentinel-5P concentration', icon: Thermometer },
     { key: 'geeTiles', label: 'Satellite Overlay', desc: 'Sentinel-5P raster tiles', icon: Layers },
-    { key: 'markers', label: 'Hotspot Markers', desc: 'Detected point locations', icon: MapPin },
-    { key: 'circles', label: 'Emission Circles', desc: 'Emission intensity rings', icon: Activity },
+    { key: 'markers', label: 'Facility Markers', desc: 'Industry facility locations', icon: Building2 },
+    { key: 'circles', label: 'Facility Radius', desc: 'Context rings around facilities', icon: Activity },
   ]
 
   return (
@@ -139,6 +141,7 @@ const LayerPanel = ({ layers, setLayers, onClose }) => {
 const MapControls = ({
   filters, setFilters, layers, setLayers,
   onRefresh, onLocateMe, isLocating, isLoadingHeatmap,
+  anomalyMode, setAnomalyMode,
 }) => {
   const [showFilters, setShowFilters] = useState(false)
   const [showLayers, setShowLayers] = useState(false)
@@ -176,6 +179,23 @@ const MapControls = ({
               <button onClick={() => setShowFilters(false)}><X className="w-4 h-4 text-gray-400" /></button>
             </div>
             <div className="space-y-4">
+              <div className="pb-3 border-b border-dark-border">
+                <label className="text-sm text-gray-400 mb-2 block">Heatmap Mode</label>
+                <button
+                  onClick={() => setAnomalyMode((v) => !v)}
+                  className={`w-full flex items-center justify-between px-3 py-2 rounded-lg border text-xs font-semibold transition-colors ${anomalyMode
+                      ? 'bg-orange-600/20 text-orange-300 border-orange-500/40'
+                      : 'bg-dark-card/70 text-gray-300 border-dark-border hover:border-accent-green/40'
+                    }`}
+                >
+                  <span className="flex items-center gap-2">
+                    <Sparkles className="w-3.5 h-3.5" />
+                    {anomalyMode ? 'Anomaly Only' : 'Raw CH4 Samples'}
+                  </span>
+                  <span className={`w-2 h-2 rounded-full ${anomalyMode ? 'bg-orange-400' : 'bg-cyan-400'}`} />
+                </button>
+              </div>
+
               <div>
                 <label className="text-sm text-gray-400 mb-2 block">Risk Level</label>
                 <div className="space-y-2">
@@ -262,10 +282,10 @@ const HeatmapLegend = ({ stats }) => {
   )
 }
 
-// ─── Hotspot Quick-Toggle Bar ───────────────────────────────────────────
+// ─── Facility Quick-Toggle Bar ──────────────────────────────────────────
 
-const HotspotToggleBar = ({ layers, setLayers }) => {
-  const toggle = (key) => setLayers((prev) => ({ ...prev, [key]: !prev[key] }))
+const FacilityToggleBar = ({ layers, setLayers, anomalyMode, setAnomalyMode }) => {
+  const toggleLayer = (key) => setLayers((prev) => ({ ...prev, [key]: !prev[key] }))
 
   const btns = [
     {
@@ -279,8 +299,8 @@ const HotspotToggleBar = ({ layers, setLayers }) => {
     },
     {
       key: 'markers',
-      activeLabel: 'Hotspots ON',
-      inactiveLabel: 'Hotspots OFF',
+      activeLabel: 'Facilities ON',
+      inactiveLabel: 'Facilities OFF',
       activeStyle: 'bg-amber-600 text-white border-amber-500 shadow-lg shadow-amber-900/40',
       inactiveStyle: 'bg-dark-card/80 text-gray-400 border-dark-border hover:border-amber-500/50 hover:text-amber-400',
       dot: 'bg-amber-400',
@@ -288,8 +308,8 @@ const HotspotToggleBar = ({ layers, setLayers }) => {
     },
     {
       key: 'circles',
-      activeLabel: 'Rings ON',
-      inactiveLabel: 'Rings OFF',
+      activeLabel: 'Radius ON',
+      inactiveLabel: 'Radius OFF',
       activeStyle: 'bg-orange-600 text-white border-orange-500 shadow-lg shadow-orange-900/40',
       inactiveStyle: 'bg-dark-card/80 text-gray-400 border-dark-border hover:border-orange-500/50 hover:text-orange-400',
       dot: 'bg-orange-400',
@@ -297,14 +317,24 @@ const HotspotToggleBar = ({ layers, setLayers }) => {
     },
   ]
 
+  const anomalyBtn = {
+    activeLabel: 'Anomaly ON',
+    inactiveLabel: 'Anomaly OFF',
+    activeStyle: 'bg-violet-600 text-white border-violet-500 shadow-lg shadow-violet-900/40',
+    inactiveStyle: 'bg-dark-card/80 text-gray-400 border-dark-border hover:border-violet-500/50 hover:text-violet-400',
+    dot: 'bg-violet-400',
+    icon: Sparkles,
+  }
+  const AnomalyIcon = anomalyBtn.icon
+
   return (
     <div className="absolute top-[4.5rem] left-1/2 -translate-x-1/2 z-[1000] flex gap-2">
-      {btns.map(({ key, activeLabel, inactiveLabel, activeStyle, inactiveStyle, dot, icon: Icon }) => {
+      {btns.filter((b) => b.key !== 'circles').map(({ key, activeLabel, inactiveLabel, activeStyle, inactiveStyle, dot, icon: Icon }) => {
         const on = layers[key]
         return (
           <button
             key={key}
-            onClick={() => toggle(key)}
+            onClick={() => toggleLayer(key)}
             className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-semibold transition-all duration-200 backdrop-blur-md ${on ? activeStyle : inactiveStyle
               }`}
           >
@@ -315,6 +345,15 @@ const HotspotToggleBar = ({ layers, setLayers }) => {
           </button>
         )
       })}
+
+      <button
+        onClick={() => setAnomalyMode((v) => !v)}
+        className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-semibold transition-all duration-200 backdrop-blur-md ${anomalyMode ? anomalyBtn.activeStyle : anomalyBtn.inactiveStyle}`}
+      >
+        <span className={`w-2 h-2 rounded-full flex-shrink-0 ${anomalyMode ? anomalyBtn.dot : 'bg-gray-600'}`} />
+        <AnomalyIcon className="w-3.5 h-3.5" />
+        {anomalyMode ? anomalyBtn.activeLabel : anomalyBtn.inactiveLabel}
+      </button>
     </div>
   )
 }
@@ -324,7 +363,7 @@ const HotspotToggleBar = ({ layers, setLayers }) => {
 const LiveMap = () => {
   const [selectedMarker, setSelectedMarker] = useState(null)
   const [filters, setFilters] = useState({
-    riskLevels: ['Critical', 'High', 'Medium', 'Low'],
+    riskLevels: ['Low'],
   })
   const [layers, setLayers] = useState({
     heatmap: true,     // leaflet.heat point heatmap (default ON)
@@ -341,6 +380,7 @@ const LiveMap = () => {
   const [geeTileUrl, setGeeTileUrl] = useState(null)
   const [isLoadingHeatmap, setIsLoadingHeatmap] = useState(false)
   const [heatmapError, setHeatmapError] = useState(null)
+  const [anomalyMode, setAnomalyMode] = useState(false)
 
   // User location
   const [userLocation, setUserLocation] = useState(null)
@@ -353,6 +393,70 @@ const LiveMap = () => {
   const fetchHeatmapData = useCallback(async () => {
     setIsLoadingHeatmap(true)
     setHeatmapError(null)
+
+    if (anomalyMode) {
+      try {
+        const now = new Date()
+        const start = new Date(now)
+        start.setDate(now.getDate() - 30)
+        const fmt = (d) => d.toISOString().slice(0, 10)
+
+        const [anomalyRes, tileRes, detectedRes] = await Promise.allSettled([
+          geeService.getHotspots(fmt(start), fmt(now), 1000, 20000),
+          geeService.getCH4Tiles(30),
+          detectedHotspotsService.getAll({ ordering: '-anomaly_score', page_size: 1000 }),
+        ])
+
+        if (tileRes.status === 'fulfilled' && tileRes.value?.tile_url) {
+          setGeeTileUrl(tileRes.value.tile_url)
+        }
+
+        if (anomalyRes.status === 'fulfilled' && Array.isArray(anomalyRes.value?.hotspots) && anomalyRes.value.hotspots.length > 0) {
+          const hotspots = anomalyRes.value.hotspots
+          const maxSigma = Math.max(...hotspots.map((h) => Number(h.anomaly_score || 0)), 1)
+          const points = hotspots.map((h) => {
+            const sigma = Number(h.anomaly_score || 0)
+            const intensity = Math.max(0.15, Math.min(1, sigma / maxSigma))
+            return [Number(h.latitude), Number(h.longitude), intensity]
+          })
+          setHeatmapPoints(points)
+          setHeatmapStats({
+            mean: anomalyRes.value?.stats?.mean,
+            std: anomalyRes.value?.stats?.std,
+            min: anomalyRes.value?.stats?.min,
+            max: anomalyRes.value?.stats?.max,
+            count: hotspots.length,
+          })
+          setIsLoadingHeatmap(false)
+          return
+        }
+
+        if (detectedRes.status === 'fulfilled' && Array.isArray(detectedRes.value) && detectedRes.value.length > 0) {
+          const rows = detectedRes.value.filter((h) => h.latitude && h.longitude)
+          const maxSigma = Math.max(...rows.map((h) => Number(h.anomaly_score || 0)), 1)
+          const points = rows.map((h) => {
+            const sigma = Number(h.anomaly_score || 0)
+            const intensity = Math.max(0.15, Math.min(1, sigma / maxSigma))
+            return [Number(h.latitude), Number(h.longitude), intensity]
+          })
+          setHeatmapPoints(points)
+          setHeatmapStats({ count: points.length })
+          setIsLoadingHeatmap(false)
+          return
+        }
+
+        setHeatmapPoints([])
+        setHeatmapStats({ count: 0 })
+        setHeatmapError('No anomaly points available for the selected period.')
+      } catch (err) {
+        setHeatmapError('Failed to load anomaly heatmap.')
+        setHeatmapPoints([])
+        setHeatmapStats({ count: 0 })
+      } finally {
+        setIsLoadingHeatmap(false)
+      }
+      return
+    }
 
     console.groupCollapsed('%c[Heatmap] fetchHeatmapData started', 'color:#22d3ee;font-weight:bold')
     console.log('[Heatmap] Firing 3 requests in parallel:')
@@ -450,17 +554,14 @@ const LiveMap = () => {
 
     console.groupEnd()
     setIsLoadingHeatmap(false)
-  }, [])
+  }, [anomalyMode])
 
-  // ── Fetch marker data from backend ──────────────────────────────────
+  // ── Fetch facility marker data from backend ─────────────────────────
 
   const fetchMarkerData = useCallback(async () => {
     setIsLoading(true)
     try {
-      const [facilitiesGeo, hotspotsGeo] = await Promise.all([
-        geojsonService.getFacilities().catch(() => null),
-        geojsonService.getHotspots().catch(() => null),
-      ])
+      const facilitiesGeo = await geojsonService.getFacilities().catch(() => null)
 
       const markers = []
       let id = 1
@@ -476,52 +577,33 @@ const LiveMap = () => {
             position: [c[1], c[0]],
             name: `${fname}`,
             subLabel: ftype.charAt(0).toUpperCase() + ftype.slice(1).replace('_', ' '),
-            emission: 0,
+            emission: null,
             riskLevel: 'Low',
             lastDetected: 'N/A',
             type: 'facility',
-          })
-        }
-      }
-
-      if (hotspotsGeo?.features) {
-        for (const f of hotspotsGeo.features) {
-          const c = f.geometry?.coordinates
-          if (!c) continue
-          const sev = f.properties?.severity || 'medium'
-          const riskMap = { critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low' }
-          const sysIdx = f.properties?.system_index || ''
-          // GEE system:index strings look like "+1229+457" – not user-friendly.
-          // Use readable coordinates instead in all cases.
-          const hotspotName = `Hotspot @ ${Number(c[1]).toFixed(3)}°N, ${Number(c[0]).toFixed(3)}°E`
-          markers.push({
-            id: id++,
-            position: [c[1], c[0]],
-            name: hotspotName,
-            subLabel: `${sev.charAt(0).toUpperCase() + sev.slice(1)} emission zone`,
-            emission: f.properties?.count || 0,
-            riskLevel: riskMap[sev] || 'Medium',
-            lastDetected: 'Sentinel-5P',
-            type: sev === 'critical' || sev === 'high' ? 'super-emitter' : 'leak',
+            operator: f.properties?.operator || 'Unknown',
+            status: f.properties?.status || 'active',
           })
         }
       }
 
       if (markers.length === 0) {
-        const hotspots = await detectedHotspotsService.getAll({ ordering: '-anomaly_score' })
-        const list = Array.isArray(hotspots) ? hotspots : []
-        list.forEach((h, i) => {
-          if (h.latitude && h.longitude) {
-            const sev = (h.severity || 'medium').toLowerCase()
-            const riskMap = { critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low' }
+        const facilities = await facilitiesService.getAll({ ordering: 'facility_id', page_size: 2000 })
+        const list = Array.isArray(facilities) ? facilities : []
+        list.forEach((f, i) => {
+          if (f.latitude && f.longitude) {
+            const ftype = f.type || 'facility'
             markers.push({
               id: i + 1,
-              position: [h.latitude, h.longitude],
-              name: h.hotspot_id || `Hotspot ${i + 1}`,
-              emission: h.ch4_count || 0,
-              riskLevel: riskMap[sev] || 'Medium',
-              lastDetected: h.detected_at || 'N/A',
-              type: sev === 'critical' || sev === 'high' ? 'super-emitter' : 'leak',
+              position: [Number(f.latitude), Number(f.longitude)],
+              name: f.name || `Facility ${i + 1}`,
+              subLabel: ftype.charAt(0).toUpperCase() + ftype.slice(1).replace('_', ' '),
+              emission: null,
+              riskLevel: 'Low',
+              lastDetected: 'N/A',
+              type: 'facility',
+              operator: f.operator || 'Unknown',
+              status: f.status || 'active',
             })
           }
         })
@@ -602,9 +684,9 @@ const LiveMap = () => {
         <div className="pointer-events-auto inline-block">
           <h1 className="text-2xl font-bold text-white">Live Detection Map</h1>
           <p className="text-gray-400 text-sm mt-1">
-            Real-time methane heatmap from Sentinel-5P TROPOMI
+            {anomalyMode ? 'Anomaly-only methane heatmap (z-score filtered)' : 'Real-time methane heatmap from Sentinel-5P TROPOMI'}
             {heatmapStats?.count ? ` \u2022 ${heatmapStats.count.toLocaleString()} samples` : ''}
-            {filteredMarkers.length > 0 ? ` \u2022 ${filteredMarkers.length} markers` : ''}
+            {filteredMarkers.length > 0 ? ` \u2022 ${filteredMarkers.length} facilities` : ''}
           </p>
         </div>
       </div>
@@ -680,7 +762,7 @@ const LiveMap = () => {
           </>
         )}
 
-        {/* Hotspot markers – small 8px dots, visible individually when zoomed */}
+        {/* Facility markers */}
         {layers.markers && filteredMarkers.map((m) => (
           <Marker key={m.id} position={m.position} icon={markerIcons[m.riskLevel]}
             eventHandlers={{ click: () => setSelectedMarker(m) }}>
@@ -702,11 +784,11 @@ const LiveMap = () => {
                   </div>
                   <div className="flex items-center gap-2 text-gray-400">
                     <Activity className="w-4 h-4" />
-                    <span><span className="text-white font-medium">{m.emission}</span> kg/hr</span>
+                    <span>Operator: <span className="text-white font-medium">{m.operator || 'Unknown'}</span></span>
                   </div>
                   <div className="flex items-center gap-2 text-gray-400">
                     <Clock className="w-4 h-4" />
-                    <span>Last detected: {m.lastDetected}</span>
+                    <span>Status: {m.status || 'active'}</span>
                   </div>
                 </div>
                 <div className="mt-4 pt-3 border-t border-dark-border flex gap-2">
@@ -722,12 +804,12 @@ const LiveMap = () => {
           </Marker>
         ))}
 
-        {/* Emission intensity circles */}
+        {/* Facility context circles */}
         {layers.circles && filteredMarkers.map((m) => (
           <Circle
             key={`circle-${m.id}`}
             center={m.position}
-            radius={m.emission * 50}
+            radius={5000}
             pathOptions={{
               color: riskColors[m.riskLevel],
               fillColor: riskColors[m.riskLevel],
@@ -738,8 +820,13 @@ const LiveMap = () => {
         ))}
       </MapContainer>
 
-      {/* Hotspot quick-toggle bar */}
-      <HotspotToggleBar layers={layers} setLayers={setLayers} />
+      {/* Facility quick-toggle bar */}
+      <FacilityToggleBar
+        layers={layers}
+        setLayers={setLayers}
+        anomalyMode={anomalyMode}
+        setAnomalyMode={setAnomalyMode}
+      />
 
       {/* Controls */}
       <MapControls
@@ -747,6 +834,8 @@ const LiveMap = () => {
         setFilters={setFilters}
         layers={layers}
         setLayers={setLayers}
+        anomalyMode={anomalyMode}
+        setAnomalyMode={setAnomalyMode}
         onRefresh={handleRefresh}
         onLocateMe={getUserLocation}
         isLocating={isLocating}
@@ -811,7 +900,7 @@ const LiveMap = () => {
               <div>
                 <h3 className="font-semibold text-white">{selectedMarker.name}</h3>
                 <p className="text-xs text-gray-500 mt-1">
-                  {selectedMarker.type === 'super-emitter' ? 'Super Emitter' : 'Standard Leak'}
+                  {selectedMarker.subLabel || 'Facility'}
                 </p>
               </div>
               <button onClick={() => setSelectedMarker(null)}>
@@ -824,12 +913,12 @@ const LiveMap = () => {
                 <StatusBadge status={selectedMarker.riskLevel} />
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-400">Emission Rate</span>
-                <span className="text-sm text-white font-medium">{selectedMarker.emission} kg/hr</span>
+                <span className="text-sm text-gray-400">Operator</span>
+                <span className="text-sm text-white font-medium">{selectedMarker.operator || 'Unknown'}</span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-400">Last Detected</span>
-                <span className="text-sm text-white">{selectedMarker.lastDetected}</span>
+                <span className="text-sm text-gray-400">Status</span>
+                <span className="text-sm text-white">{selectedMarker.status || 'active'}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-sm text-gray-400">Coordinates</span>
