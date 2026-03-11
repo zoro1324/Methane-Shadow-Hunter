@@ -91,19 +91,52 @@ const Alerts = () => {
   const criticalCount = alerts.filter((a) => a.type === 'critical').length
   const warningCount = alerts.filter((a) => a.type === 'warning').length
 
+  // Issue #5: Persist alert read/dismiss states to localStorage
+  const STORAGE_KEY = 'msh_alert_state'
+  const loadAlertState = () => {
+    try {
+      return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')
+    } catch { return {} }
+  }
+  const saveAlertState = (state) => {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)) } catch {}
+  }
+
+  // On initial load, apply persisted states
+  useEffect(() => {
+    const stored = loadAlertState()
+    if (Object.keys(stored).length > 0) {
+      setAlerts(prev => prev.map(a => {
+        const s = stored[a.id]
+        if (s?.dismissed) return null
+        if (s?.read) return { ...a, read: true }
+        return a
+      }).filter(Boolean))
+    }
+  }, [alerts.length > 0 && alerts[0]?.id]) // re-apply when alerts first load
+
   // Mark alert as read
   const markAsRead = (alertId) => {
     setAlerts(alerts.map((a) => (a.id === alertId ? { ...a, read: true } : a)))
+    const state = loadAlertState()
+    state[alertId] = { ...state[alertId], read: true }
+    saveAlertState(state)
   }
 
   // Mark all as read
   const markAllAsRead = () => {
     setAlerts(alerts.map((a) => ({ ...a, read: true })))
+    const state = loadAlertState()
+    alerts.forEach(a => { state[a.id] = { ...state[a.id], read: true } })
+    saveAlertState(state)
   }
 
   // Delete alert
   const deleteAlert = (alertId) => {
     setAlerts(alerts.filter((a) => a.id !== alertId))
+    const state = loadAlertState()
+    state[alertId] = { ...state[alertId], dismissed: true }
+    saveAlertState(state)
   }
 
   // Clear all alerts

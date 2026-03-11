@@ -92,6 +92,7 @@ const Reports = () => {
       setExpandedReport(full)
     } catch (err) {
       console.error('Report detail error:', err)
+      setError('Failed to load report details. Please try again.')
     }
   }
 
