@@ -23,12 +23,16 @@ class FacilityAdmin(admin.ModelAdmin):
 class MethaneHotspotAdmin(admin.ModelAdmin):
     list_display = ['system_index', 'count', 'severity', 'latitude', 'longitude']
     list_filter = ['severity']
+    # Issue 20: Add search fields for large datasets
+    search_fields = ['system_index', 'severity']
 
 
 @admin.register(DetectedHotspot)
 class DetectedHotspotAdmin(admin.ModelAdmin):
     list_display = ['hotspot_id', 'priority', 'anomaly_score', 'severity', 'requires_highres']
     list_filter = ['priority', 'severity', 'requires_highres']
+    # Issue 20: Add search fields for large datasets
+    search_fields = ['hotspot_id', 'severity']
 
 
 @admin.register(PlumeObservation)
@@ -47,6 +51,8 @@ class AttributedEmissionAdmin(admin.ModelAdmin):
 class InversionResultAdmin(admin.ModelAdmin):
     list_display = ['attribution', 'estimated_q_kg_hr', 'error_pct', 'converged']
     list_filter = ['converged']
+    # Issue 20: Add search fields for large datasets
+    search_fields = ['estimated_q_kg_hr']
 
 
 @admin.register(TaskingRequest)

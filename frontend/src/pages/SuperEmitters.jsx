@@ -140,6 +140,11 @@ const SuperEmitters = () => {
   // ── Run company analysis ──────────────────────────────────────────────────
   const runAnalysis = async () => {
     if (!selectedFacility) return
+    // Issue #12: Validate date range
+    if (fromDate >= toDate) {
+      setError('Invalid date range: "From" must be before "To".')
+      return
+    }
     setLoading(true); setError(null); setAnalysisRun(false)
     try {
       const result = await geeService.getCompanyAnalysis({

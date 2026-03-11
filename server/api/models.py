@@ -14,6 +14,7 @@ Maps to MySQL tables for:
 """
 
 from django.db import models
+from django.core.validators import MinValueValidator, MaxValueValidator
 
 
 class Facility(models.Model):
@@ -100,7 +101,11 @@ class DetectedHotspot(models.Model):
     anomaly_score = models.FloatField()
     severity = models.CharField(max_length=16)
     requires_highres = models.BooleanField(default=False)
-    priority = models.IntegerField(choices=PRIORITY_CHOICES, default=3)
+    # Issue 13: Enforce valid priority range at model level
+    priority = models.IntegerField(
+        choices=PRIORITY_CHOICES, default=3,
+        validators=[MinValueValidator(1), MaxValueValidator(3)],
+    )
     pipeline_run = models.ForeignKey(
         'PipelineRun', on_delete=models.CASCADE, null=True, blank=True, related_name='detected_hotspots'
     )
@@ -170,8 +175,10 @@ class AttributedEmission(models.Model):
 class InversionResult(models.Model):
     """Results from Gaussian plume inverse optimization."""
 
+    # Issue 9: SET_NULL instead of CASCADE to preserve inversion data
     attribution = models.OneToOneField(
-        AttributedEmission, on_delete=models.CASCADE, related_name='inversion'
+        AttributedEmission, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='inversion'
     )
     estimated_q_kg_hr = models.FloatField(help_text='Estimated emission rate (kg/hr)')
     estimated_q_kg_s = models.FloatField(help_text='Estimated emission rate (kg/s)')
