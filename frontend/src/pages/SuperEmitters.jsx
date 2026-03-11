@@ -173,7 +173,7 @@ const SuperEmitters = () => {
     } catch (err) {
       console.error(err)
       const msg = err?.response?.data?.detail || err?.response?.data?.error || err.message
-      setError(`Analysis failed: ${msg}`)
+      setError(`Analysis unavailable. Please try again or check your connection.`)
     } finally {
       setLoading(false)
     }
@@ -425,7 +425,7 @@ const SuperEmitters = () => {
             className="flex flex-wrap items-center gap-x-6 gap-y-2 p-3 rounded-xl border border-info-blue/40 bg-info-blue/10 text-xs">
             <span className="flex items-center gap-1.5 text-info-blue font-semibold">
               <Satellite className="w-3.5 h-3.5" />
-              GEE Analysis Complete
+              Satellite Analysis Complete
             </span>
             <span className="text-gray-400">
               Facility: <strong className="text-white">{facilityInfo?.name || '—'}</strong>
@@ -586,7 +586,7 @@ const SuperEmitters = () => {
                     />
                     {/* Today CH₄ tile overlay */}
                     {todayTile && (
-                      <TileLayer url={todayTile} opacity={0.6} attribution="Copernicus Sentinel-5P / GEE" />
+                      <TileLayer url={todayTile} opacity={0.6} attribution="Copernicus Sentinel-5P" />
                     )}
                     {/* Search radius circle */}
                     {center && (
@@ -693,7 +693,7 @@ const SuperEmitters = () => {
                     style={{ height: '100%', width: '100%' }}
                     scrollWheelZoom zoomControl attributionControl={false}>
                     <TileLayer url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" />
-                    <TileLayer url={histTile} opacity={0.65} attribution="Copernicus Sentinel-5P / GEE" />
+                    <TileLayer url={histTile} opacity={0.65} attribution="Copernicus Sentinel-5P" />
                     {center && (
                       <Circle
                         center={[center.lat, center.lng]}
@@ -786,7 +786,7 @@ const SuperEmitters = () => {
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-mono text-accent-green text-sm">{selectedEmitter.id}</span>
                       <StatusBadge status={selectedEmitter.status} />
-                      <span className="px-1.5 py-0.5 rounded text-xs font-semibold bg-info-blue/20 text-info-blue">GEE</span>
+                      <span className="px-1.5 py-0.5 rounded text-xs font-semibold bg-info-blue/20 text-info-blue">S5P</span>
                     </div>
                     <p className="text-white font-semibold">{selectedEmitter.location}</p>
                   </div>

@@ -108,9 +108,8 @@ class MethaneHunterPipeline:
         self.wind = WindField(use_live=not self.use_demo)
         self.inverter = PlumeInverter(stability_class="D")
         self.agent = ComplianceAuditAgent(
-            model=config.featherless_model,
-            api_key=config.featherless_api_key,
-            base_url=config.featherless_base_url,
+            model=config.ollama_model,
+            base_url=config.ollama_base_url,
         )
 
         # Results storage

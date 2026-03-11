@@ -216,7 +216,7 @@ const Dashboard = () => {
                     className="w-full text-left px-4 py-3 text-sm text-gray-200 hover:bg-accent-green/10 hover:text-accent-green transition-colors border-t border-dark-border"
                   >
                     <span className="font-medium">Live</span>
-                    <p className="text-xs text-gray-500 mt-0.5">GEE + CarbonMapper API</p>
+                    <p className="text-xs text-gray-500 mt-0.5">Satellite + CarbonMapper API</p>
                   </button>
                 </motion.div>
               )}

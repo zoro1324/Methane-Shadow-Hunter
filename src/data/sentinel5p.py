@@ -6,6 +6,8 @@ from the bundled dataset. Also supports GEE live queries if configured.
 """
 
 import json
+import time
+import logging
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -64,6 +66,8 @@ class Sentinel5PClient:
     def initialize_gee(self):
         """Initialize Google Earth Engine."""
         if not self._gee_initialized:
+            # Silence googleapiclient's noisy retry WARNING logs
+            logging.getLogger('googleapiclient.http').setLevel(logging.ERROR)
             try:
                 ee.Initialize(project='ardent-fusion-445310-r2')
             except Exception as e:
@@ -72,8 +76,57 @@ class Sentinel5PClient:
                 ee.Initialize(project='ardent-fusion-445310-r2')
             self._gee_initialized = True
 
+    # ------------------------------------------------------------------
+    # GEE retry helper
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _gee_getinfo_with_retry(ee_object, max_retries: int = 1, base_delay: float = 0.0):
+        """
+        Call .getInfo() on a GEE object.
+
+        Keeps a single fast attempt so callers can fall back to local data
+        quickly when GEE is experiencing an outage.  The underlying
+        googleapiclient already does its own retries; we clamp those to 1 as
+        well so the total wait before a fallback is < 10 s.
+        """
+        import ee.data as _eed
+        # Suppress googleapiclient's built-in retry loop so we don't wait 30-60 s
+        _orig_retries = getattr(_eed, 'MAX_RETRIES', 5)
+        try:
+            _eed.MAX_RETRIES = 1
+        except Exception:
+            pass
+
+        last_exc = None
+        for attempt in range(max_retries):
+            try:
+                return ee_object.getInfo()
+            except Exception as exc:
+                last_exc = exc
+                msg = str(exc)
+                # Only retry on transient server-side errors
+                if "internal error" in msg.lower() or "500" in msg or "EEException" in type(exc).__name__:
+                    if attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt)
+                        if delay > 0:
+                            print(f"[GEE] Transient error on attempt {attempt + 1}/{max_retries}. "
+                                  f"Retrying in {delay:.0f}s … ({msg[:120]})")
+                            time.sleep(delay)
+                else:
+                    raise  # non-retryable error — propagate immediately
+        try:
+            _eed.MAX_RETRIES = _orig_retries
+        except Exception:
+            pass
+        raise last_exc  # all retries exhausted
+
     def fetch_hotspots_gee(self, bbox: tuple, days: int = 30) -> pd.DataFrame:
-        """Fetch real-time Sentinel-5P CH4 anomalous pixels from GEE."""
+        """Fetch real-time Sentinel-5P CH4 anomalous pixels from GEE.
+
+        Falls back to the bundled local CSV if GEE returns persistent
+        server-side (HTTP 500) errors after all retries.
+        """
         self.initialize_gee()
         
         endDate = ee.Date(datetime.now().strftime('%Y-%m-%d'))
@@ -90,12 +143,19 @@ class Sentinel5PClient:
         mean_img = collection.mean().clip(region)
         
         # Calculate region stats to find anomaly threshold
-        stats = mean_img.reduceRegion(
-            reducer=ee.Reducer.mean().combine(ee.Reducer.stdDev(), sharedInputs=True),
-            geometry=region,
-            scale=10000,
-            maxPixels=1e9
-        ).getInfo()
+        try:
+            stats = self._gee_getinfo_with_retry(
+                mean_img.reduceRegion(
+                    reducer=ee.Reducer.mean().combine(ee.Reducer.stdDev(), sharedInputs=True),
+                    geometry=region,
+                    scale=10000,
+                    maxPixels=1e9
+                )
+            )
+        except Exception as exc:
+            print(f"[WARNING] GEE reduceRegion failed after all retries: {exc}")
+            print("[WARNING] Falling back to bundled local CSV dataset.")
+            return self.load_hotspots_csv()
         
         ch4_mean = stats.get('CH4_column_volume_mixing_ratio_dry_air_mean')
         ch4_std = stats.get('CH4_column_volume_mixing_ratio_dry_air_stdDev')
@@ -113,12 +173,19 @@ class Sentinel5PClient:
         anomalies = mean_img.updateMask(mean_img.gt(threshold))
         
         # Sample points from the anomalies
-        points = anomalies.sample(
-            region=region,
-            scale=10000,
-            numPixels=500, # Max points to sample as hotspots
-            geometries=True
-        ).getInfo()
+        try:
+            points = self._gee_getinfo_with_retry(
+                anomalies.sample(
+                    region=region,
+                    scale=10000,
+                    numPixels=500,  # Max points to sample as hotspots
+                    geometries=True
+                )
+            )
+        except Exception as exc:
+            print(f"[WARNING] GEE sample failed after all retries: {exc}")
+            print("[WARNING] Falling back to bundled local CSV dataset.")
+            return self.load_hotspots_csv()
         
         features = points.get('features', [])
         
