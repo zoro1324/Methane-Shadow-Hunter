@@ -34,13 +34,13 @@ const makeIcon = (color) =>
     className: '',
     html: `
       <div style="
-        width:14px;height:14px;border-radius:50%;
-        background:${color};border:2px solid #fff;
-        box-shadow:0 0 8px ${color}88;
+        width:8px;height:8px;border-radius:50%;
+        background:${color};border:1.5px solid rgba(255,255,255,0.8);
+        box-shadow:0 0 4px ${color}99;
       "></div>`,
-    iconSize: [14, 14],
-    iconAnchor: [7, 7],
-    popupAnchor: [0, -10],
+    iconSize: [8, 8],
+    iconAnchor: [4, 4],
+    popupAnchor: [0, -6],
   })
 
 const markerIcons = Object.fromEntries(
@@ -468,14 +468,18 @@ const LiveMap = () => {
       if (facilitiesGeo?.features) {
         for (const f of facilitiesGeo.features) {
           const c = f.geometry?.coordinates
-          if (c) markers.push({
+          if (!c) continue
+          const ftype = f.properties?.type || 'facility'
+          const fname = f.properties?.name || 'Unknown Facility'
+          markers.push({
             id: id++,
             position: [c[1], c[0]],
-            name: f.properties?.name || 'Unknown Facility',
+            name: `${fname}`,
+            subLabel: ftype.charAt(0).toUpperCase() + ftype.slice(1).replace('_', ' '),
             emission: 0,
-            riskLevel: 'Medium',
+            riskLevel: 'Low',
             lastDetected: 'N/A',
-            type: 'leak',
+            type: 'facility',
           })
         }
       }
@@ -486,10 +490,15 @@ const LiveMap = () => {
           if (!c) continue
           const sev = f.properties?.severity || 'medium'
           const riskMap = { critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low' }
+          const sysIdx = f.properties?.system_index || ''
+          // GEE system:index strings look like "+1229+457" – not user-friendly.
+          // Use readable coordinates instead in all cases.
+          const hotspotName = `Hotspot @ ${Number(c[1]).toFixed(3)}°N, ${Number(c[0]).toFixed(3)}°E`
           markers.push({
             id: id++,
             position: [c[1], c[0]],
-            name: f.properties?.label || `Hotspot #${f.properties?.system_index || id}`,
+            name: hotspotName,
+            subLabel: `${sev.charAt(0).toUpperCase() + sev.slice(1)} emission zone`,
             emission: f.properties?.count || 0,
             riskLevel: riskMap[sev] || 'Medium',
             lastDetected: 'Sentinel-5P',
@@ -671,14 +680,19 @@ const LiveMap = () => {
           </>
         )}
 
-        {/* Hotspot markers */}
+        {/* Hotspot markers – small 8px dots, visible individually when zoomed */}
         {layers.markers && filteredMarkers.map((m) => (
           <Marker key={m.id} position={m.position} icon={markerIcons[m.riskLevel]}
             eventHandlers={{ click: () => setSelectedMarker(m) }}>
             <Popup className="custom-popup">
               <div className="min-w-[250px]">
                 <div className="flex items-start justify-between mb-3">
-                  <h3 className="font-semibold text-white text-sm">{m.name}</h3>
+                  <div>
+                    <h3 className="font-semibold text-white text-sm">{m.name}</h3>
+                    {m.subLabel && (
+                      <p className="text-[11px] text-gray-500 mt-0.5">{m.subLabel}</p>
+                    )}
+                  </div>
                   <StatusBadge status={m.riskLevel} />
                 </div>
                 <div className="space-y-2 text-sm">
