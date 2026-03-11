@@ -41,10 +41,10 @@ class PlumeInverter:
 
     def __init__(
         self,
-        learning_rate: float = 0.1,
-        max_iterations: int = 2000,
-        convergence_tol: float = 1e-6,
-        min_iterations: int = 300,
+        learning_rate: float = 0.05,
+        max_iterations: int = 5000,
+        convergence_tol: float = 1e-8,
+        min_iterations: int = 500,
         stability_class: str = "D",
     ):
         self.lr = learning_rate
@@ -111,18 +111,19 @@ class PlumeInverter:
             stability_class=self.stability_class,
         )
 
-        # Use Adam with a learning-rate scheduler
+        # ── Phase 1: Adam warm-up with aggressive LR scheduling ──
         optimizer = torch.optim.Adam(model.parameters(), lr=self.lr)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='min', factor=0.5, patience=100, min_lr=1e-5
+            optimizer, mode='min', factor=0.3, patience=50, min_lr=1e-6
         )
         loss_fn = nn.MSELoss()
 
         prev_loss = float("inf")
         converged = False
         final_loss = 0.0
+        adam_iters = min(self.max_iter, 3000)
 
-        for i in range(self.max_iter):
+        for i in range(adam_iters):
             optimizer.zero_grad()
 
             predicted_raw = model.forward(rx, ry, rz, wind_speed)
@@ -135,9 +136,7 @@ class PlumeInverter:
 
             current_loss = loss.item()
 
-            # Only check convergence after warm-up iterations
             if i >= self.min_iter:
-                # Relative convergence criterion
                 rel_change = abs(prev_loss - current_loss) / (abs(prev_loss) + 1e-30)
                 if rel_change < self.tol:
                     converged = True
@@ -146,6 +145,31 @@ class PlumeInverter:
 
             prev_loss = current_loss
             final_loss = current_loss
+
+        # ── Phase 2: L-BFGS fine-tuning for precise convergence ──
+        if not converged:
+            lbfgs = torch.optim.LBFGS(
+                model.parameters(), lr=1.0, max_iter=20,
+                line_search_fn="strong_wolfe",
+            )
+            lbfgs_steps = self.max_iter - adam_iters
+            for j in range(lbfgs_steps):
+                def closure():
+                    lbfgs.zero_grad()
+                    pred = model.forward(rx, ry, rz, wind_speed) / obs_scale
+                    lo = loss_fn(pred, obs)
+                    lo.backward()
+                    return lo
+                loss_val = lbfgs.step(closure)
+                current_loss = loss_val.item() if hasattr(loss_val, 'item') else float(loss_val)
+                rel_change = abs(prev_loss - current_loss) / (abs(prev_loss) + 1e-30)
+                if rel_change < self.tol:
+                    converged = True
+                    final_loss = current_loss
+                    break
+                prev_loss = current_loss
+                final_loss = current_loss
+            i = adam_iters + j
 
         # Compute confidence interval via Hessian approximation
         ci_low, ci_high = self._compute_confidence_interval(model, obs, rx, ry, rz, wind_speed)

@@ -80,7 +80,7 @@ def fetch_overpass(query: str, stdout) -> list[dict]:
             resp = requests.post(
                 url,
                 data={"data": query},
-                timeout=200,
+                timeout=60,  # Issue 12: Reduced from 200s to 60s
                 headers={"User-Agent": "MethaneHunter/1.0 (educational research)"},
             )
             resp.raise_for_status()
