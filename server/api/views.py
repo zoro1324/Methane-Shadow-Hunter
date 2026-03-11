@@ -658,9 +658,10 @@ def _run_pipeline_background(run_pk, mode, use_llm):
         t0 = _step_hdr(5, run_pk)
         print(_inf(f"Join algorithm : Haversine distance ≤ {config.spatial_join_radius_km} km"))
         print(_inf("Loading facilities and computing nearest-neighbour distances …"))
-        infra      = InfrastructureDB(data_path=config.dataset_dir / "demo_industries.csv")
+        infra      = InfrastructureDB(use_database=True)
         facilities = infra.load_facilities()
         joiner     = SpatialJoiner(radius_km=config.spatial_join_radius_km)
+        print(_inf(f"Infrastructure source : {getattr(infra, 'last_source', 'unknown')}"))
 
         fac_types = {}
         for f in facilities:
