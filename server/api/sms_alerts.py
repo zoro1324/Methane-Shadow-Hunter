@@ -13,6 +13,7 @@ Configuration (server/.env):
 
 import logging
 from datetime import datetime
+from time import sleep
 
 logger = logging.getLogger(__name__)
 
@@ -66,39 +67,58 @@ def _get_twilio_client():
     return client, from_number, to_number
 
 
-def _send_sms(body: str) -> bool:
+def _send_sms(body: str, max_retries: int = 3) -> bool:
     """
-    Send a single SMS via Twilio.
+    Send a single SMS via Twilio with retry logic.
 
     Args:
-        body: Message text (keep under 160 chars for a single-segment SMS).
+        body: Message text.
+        max_retries: Number of retry attempts with exponential backoff.
 
     Returns:
         True if sent successfully, False otherwise.
     """
+    # Issue 18: Truncate to 160 chars for single-segment SMS
+    body = body[:160]
+
     try:
         client, from_number, to_number = _get_twilio_client()
-        message = client.messages.create(
-            body=body,
-            from_=from_number,
-            to=to_number,
-        )
-        logger.info(
-            "[SMS] Sent to %s | SID: %s | Status: %s",
-            to_number, message.sid, message.status,
-        )
-        print(
-            f"  [SMS] ✔ Alert sent → {to_number} | SID: {message.sid}"
-        )
-        return True
     except RuntimeError as exc:
         logger.warning("[SMS] Skipped – %s", exc)
         print(f"  [SMS] ⚠ Skipped – {exc}")
         return False
-    except Exception as exc:
-        logger.error("[SMS] Failed to send: %s", exc, exc_info=True)
-        print(f"  [SMS] ✗ Failed – {exc}")
-        return False
+
+    # Issue 10: Retry with exponential backoff
+    for attempt in range(max_retries):
+        try:
+            message = client.messages.create(
+                body=body,
+                from_=from_number,
+                to=to_number,
+            )
+            logger.info(
+                "[SMS] Sent to %s | SID: %s | Status: %s",
+                to_number, message.sid, message.status,
+            )
+            print(
+                f"  [SMS] ✔ Alert sent → {to_number} | SID: {message.sid}"
+            )
+            return True
+        except Exception as exc:
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt  # 1s, 2s, 4s
+                logger.warning(
+                    "[SMS] Attempt %d/%d failed: %s. Retrying in %ds...",
+                    attempt + 1, max_retries, exc, wait_time,
+                )
+                sleep(wait_time)
+            else:
+                logger.error(
+                    "[SMS] Failed to send after %d retries: %s",
+                    max_retries, exc, exc_info=True,
+                )
+                print(f"  [SMS] ✗ Failed after {max_retries} retries – {exc}")
+    return False
 
 
 # ─── Public API ─────────────────────────────────────────────────────────────
