@@ -37,19 +37,23 @@ def _run_with_timeout(fn, timeout=GEE_CALL_TIMEOUT):
     future = executor.submit(fn)
     try:
         result = future.result(timeout=timeout)
-        executor.shutdown(wait=False)
         return result
     except FuturesTimeoutError:
-        # Abandon the thread — let it finish in the background without blocking.
+        # Issue 5: Log the orphaned thread warning instead of silently cancelling
+        logger.warning(
+            'GEE call timed out after %ss; orphaned thread will complete eventually.',
+            timeout,
+        )
         future.cancel()
-        executor.shutdown(wait=False)
         raise TimeoutError(
             f'GEE call timed out after {timeout}s.'
             ' Check Earth Engine authentication and network connectivity.'
         )
     except Exception:
-        executor.shutdown(wait=False)
         raise
+    finally:
+        # Issue 5: Always shut down executor in finally block
+        executor.shutdown(wait=False)
 
 # Load .env from server directory
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
@@ -88,30 +92,33 @@ CH4_VIS_PARAMS = {
 }
 
 _initialized = False
+_init_lock = threading.Lock()
 
 
 def _ensure_init():
-    """Initialize Earth Engine if not already done."""
+    """Initialize Earth Engine if not already done (thread-safe)."""
+    # Issue 8: Use a threading lock to prevent race condition
     global _initialized
-    if _initialized:
-        print('[GEE-SVC] Earth Engine already initialised ✔')
-        return
-    print(f'[GEE-SVC] Initialising Earth Engine  project={GEE_PROJECT} ...')
-    try:
-        ee.Initialize(project=GEE_PROJECT)
-        _initialized = True
-        print('[GEE-SVC] ee.Initialize() succeeded ✔')
-    except Exception as init_exc:
-        print(f'[GEE-SVC] ee.Initialize() failed: {init_exc}')
-        print('[GEE-SVC] Attempting ee.Authenticate() ...')
+    with _init_lock:
+        if _initialized:
+            print('[GEE-SVC] Earth Engine already initialised \u2714')
+            return
+        print(f'[GEE-SVC] Initialising Earth Engine  project={GEE_PROJECT} ...')
         try:
-            ee.Authenticate()
             ee.Initialize(project=GEE_PROJECT)
             _initialized = True
-            print('[GEE-SVC] ee.Authenticate() + ee.Initialize() succeeded ✔')
-        except Exception as auth_exc:
-            print(f'[GEE-SVC] ✗ Authentication FAILED: {auth_exc}')
-            raise
+            print('[GEE-SVC] ee.Initialize() succeeded \u2714')
+        except Exception as init_exc:
+            print(f'[GEE-SVC] ee.Initialize() failed: {init_exc}')
+            print('[GEE-SVC] Attempting ee.Authenticate() ...')
+            try:
+                ee.Authenticate()
+                ee.Initialize(project=GEE_PROJECT)
+                _initialized = True
+                print('[GEE-SVC] ee.Authenticate() + ee.Initialize() succeeded \u2714')
+            except Exception as auth_exc:
+                print(f'[GEE-SVC] \u2717 Authentication FAILED: {auth_exc}')
+                raise
 
 
 def _get_ch4_image(days: int = 30, bbox: tuple = DEFAULT_BBOX):

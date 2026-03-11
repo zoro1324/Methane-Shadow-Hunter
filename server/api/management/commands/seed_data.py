@@ -54,24 +54,33 @@ class Command(BaseCommand):
 
     def _seed_hotspots(self, csv_path: Path) -> int:
         """Load India_Methane_Hotspots.csv into MethaneHotspot table."""
+        from django.db import transaction
+
         existing_idx = set(MethaneHotspot.objects.values_list('system_index', flat=True))
         objs = []
+        skipped = 0
 
         with open(csv_path, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for row in reader:
-                sys_index = row['system:index'].strip()
-                if sys_index in existing_idx:
+                # Issue 11: Gracefully handle malformed CSV rows
+                try:
+                    sys_index = row['system:index'].strip()
+                    if sys_index in existing_idx:
+                        continue
+
+                    count = int(row['count'])
+                    label = int(row['label'])
+
+                    # Parse coordinates from .geo JSON
+                    geo = json.loads(row['.geo'])
+                    coords = geo.get('coordinates', [0, 0])
+                    longitude = float(coords[0])
+                    latitude = float(coords[1])
+                except (KeyError, ValueError, TypeError, json.JSONDecodeError) as e:
+                    self.stderr.write(f'Skipping row with invalid data: {e}')
+                    skipped += 1
                     continue
-
-                count = int(row['count'])
-                label = int(row['label'])
-
-                # Parse coordinates from .geo JSON
-                geo = json.loads(row['.geo'])
-                coords = geo.get('coordinates', [0, 0])
-                longitude = coords[0]
-                latitude = coords[1]
 
                 # Classify severity by count
                 if count >= 50:
@@ -90,6 +99,11 @@ class Command(BaseCommand):
                     severity=severity,
                 ))
 
+        if skipped:
+            self.stdout.write(self.style.WARNING(f'  Skipped {skipped} malformed rows.'))
+
+        # Issue 19: Wrap bulk_create in transaction
         if objs:
-            MethaneHotspot.objects.bulk_create(objs, ignore_conflicts=True)
+            with transaction.atomic():
+                MethaneHotspot.objects.bulk_create(objs, ignore_conflicts=True)
         return len(objs)
