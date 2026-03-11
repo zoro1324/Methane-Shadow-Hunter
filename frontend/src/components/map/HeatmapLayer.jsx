@@ -41,12 +41,15 @@ const HeatmapLayer = ({
     },
   }
 
-  // Memoize merged options so we only re-create the heat layer when actual
-  // option values change (not on every parent render).
+  // Issue #17: Use ref-based deep compare instead of JSON.stringify on every render
+  const optionsRef = useRef(options)
+  if (JSON.stringify(optionsRef.current) !== JSON.stringify(options)) {
+    optionsRef.current = options
+  }
+
   const mergedOptions = useMemo(
-    () => ({ ...defaultOptions, ...options }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [JSON.stringify(options)],
+    () => ({ ...defaultOptions, ...optionsRef.current }),
+    [optionsRef.current],
   )
 
   useEffect(() => {

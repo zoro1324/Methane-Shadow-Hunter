@@ -8,6 +8,7 @@ import SuperEmitters from './pages/SuperEmitters'
 import Reports from './pages/Reports'
 import Alerts from './pages/Alerts'
 import DashboardLayout from './components/layout/DashboardLayout'
+import ProtectedRoute from './components/auth/ProtectedRoute'
 
 /**
  * Main App component with routing configuration
@@ -21,8 +22,8 @@ function App() {
       <Route path="/login" element={<Login />} />
       <Route path="/signup" element={<Signup />} />
       
-      {/* Dashboard Routes - wrapped with DashboardLayout */}
-      <Route path="/dashboard" element={<DashboardLayout />}>
+      {/* Dashboard Routes - protected + wrapped with DashboardLayout */}
+      <Route path="/dashboard" element={<ProtectedRoute><DashboardLayout /></ProtectedRoute>}>
         <Route index element={<Dashboard />} />
         <Route path="map" element={<LiveMap />} />
         <Route path="super-emitters" element={<SuperEmitters />} />
