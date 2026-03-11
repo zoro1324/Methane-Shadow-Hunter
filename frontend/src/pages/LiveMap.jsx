@@ -142,6 +142,7 @@ const MapControls = ({
   filters, setFilters, layers, setLayers,
   onRefresh, onLocateMe, isLocating, isLoadingHeatmap,
   anomalyMode, setAnomalyMode,
+  facilityTypes,
 }) => {
   const [showFilters, setShowFilters] = useState(false)
   const [showLayers, setShowLayers] = useState(false)
@@ -197,22 +198,24 @@ const MapControls = ({
               </div>
 
               <div>
-                <label className="text-sm text-gray-400 mb-2 block">Risk Level</label>
+                <label className="text-sm text-gray-400 mb-2 block">Facility Type</label>
                 <div className="space-y-2">
-                  {['Critical', 'High', 'Medium', 'Low'].map((level) => (
-                    <label key={level} className="flex items-center gap-2 cursor-pointer">
-                      <input type="checkbox" checked={filters.riskLevels.includes(level)}
+                  {facilityTypes.map((type) => (
+                    <label key={type} className="flex items-center gap-2 cursor-pointer">
+                      <input type="checkbox" checked={filters.facilityTypes.includes(type)}
                         onChange={(e) => {
                           setFilters((prev) => ({
                             ...prev,
-                            riskLevels: e.target.checked
-                              ? [...prev.riskLevels, level]
-                              : prev.riskLevels.filter((l) => l !== level),
+                            facilityTypes: e.target.checked
+                              ? [...prev.facilityTypes, type]
+                              : prev.facilityTypes.filter((t) => t !== type),
                           }))
                         }}
                         className="w-4 h-4 rounded border-dark-border bg-dark-bg text-accent-green focus:ring-accent-green"
                       />
-                      <span className="text-sm text-gray-300">{level}</span>
+                      <span className="text-sm text-gray-300">
+                        {type.charAt(0).toUpperCase() + type.slice(1).replace('_', ' ')}
+                      </span>
                     </label>
                   ))}
                 </div>
@@ -363,7 +366,7 @@ const FacilityToggleBar = ({ layers, setLayers, anomalyMode, setAnomalyMode }) =
 const LiveMap = () => {
   const [selectedMarker, setSelectedMarker] = useState(null)
   const [filters, setFilters] = useState({
-    riskLevels: ['Low'],
+    facilityTypes: [],
   })
   const [layers, setLayers] = useState({
     heatmap: true,     // leaflet.heat point heatmap (default ON)
@@ -581,6 +584,7 @@ const LiveMap = () => {
             riskLevel: 'Low',
             lastDetected: 'N/A',
             type: 'facility',
+            facilityType: ftype,
             operator: f.properties?.operator || 'Unknown',
             status: f.properties?.status || 'active',
           })
@@ -602,6 +606,7 @@ const LiveMap = () => {
               riskLevel: 'Low',
               lastDetected: 'N/A',
               type: 'facility',
+              facilityType: ftype,
               operator: f.operator || 'Unknown',
               status: f.status || 'active',
             })
@@ -610,6 +615,11 @@ const LiveMap = () => {
       }
 
       setMapMarkers(markers)
+      const uniqueTypes = [...new Set(markers.map((m) => m.facilityType).filter(Boolean))]
+      setFilters((prev) => {
+        if (prev.facilityTypes.length > 0) return prev
+        return { ...prev, facilityTypes: uniqueTypes }
+      })
     } catch (err) {
       console.error('Map marker fetch error:', err)
     } finally {
@@ -665,7 +675,10 @@ const LiveMap = () => {
 
   // ── Derived data ────────────────────────────────────────────────────
 
-  const filteredMarkers = mapMarkers.filter((m) => filters.riskLevels.includes(m.riskLevel))
+  const facilityTypes = [...new Set(mapMarkers.map((m) => m.facilityType).filter(Boolean))]
+  const filteredMarkers = mapMarkers.filter((m) =>
+    filters.facilityTypes.length === 0 || filters.facilityTypes.includes(m.facilityType),
+  )
 
   const handleRefresh = () => {
     fetchHeatmapData()
@@ -836,6 +849,7 @@ const LiveMap = () => {
         setLayers={setLayers}
         anomalyMode={anomalyMode}
         setAnomalyMode={setAnomalyMode}
+        facilityTypes={facilityTypes}
         onRefresh={handleRefresh}
         onLocateMe={getUserLocation}
         isLocating={isLocating}
