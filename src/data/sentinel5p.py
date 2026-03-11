@@ -58,6 +58,7 @@ class Sentinel5PClient:
             dataset_dir = config.dataset_dir
         self.dataset_dir = Path(dataset_dir)
         self._gee_initialized = False
+        self.last_fetch_debug: dict = {}
 
     # ------------------------------------------------------------------
     # GEE live dataset loading
@@ -68,12 +69,16 @@ class Sentinel5PClient:
         if not self._gee_initialized:
             # Silence googleapiclient's noisy retry WARNING logs
             logging.getLogger('googleapiclient.http').setLevel(logging.ERROR)
+            print("[S5P] Initializing Earth Engine client (project=ardent-fusion-445310-r2)")
             try:
                 ee.Initialize(project='ardent-fusion-445310-r2')
+                print("[S5P] Earth Engine initialization succeeded")
             except Exception as e:
-                print("Earth Engine not authenticated. Initiating authentication...")
+                print(f"[S5P] Earth Engine initialize failed: {e}")
+                print("[S5P] Earth Engine not authenticated. Initiating authentication...")
                 ee.Authenticate()
                 ee.Initialize(project='ardent-fusion-445310-r2')
+                print("[S5P] Earth Engine authentication + initialization succeeded")
             self._gee_initialized = True
 
     # ------------------------------------------------------------------
@@ -128,9 +133,26 @@ class Sentinel5PClient:
         server-side (HTTP 500) errors after all retries.
         """
         self.initialize_gee()
-        
+
+        run_utc = datetime.utcnow().replace(microsecond=0)
         endDate = ee.Date(datetime.now().strftime('%Y-%m-%d'))
         startDate = endDate.advance(-days, 'day')
+
+        start_date_str = (run_utc - pd.Timedelta(days=days)).date().isoformat()
+        end_date_str = run_utc.date().isoformat()
+        print(
+            f"[S5P] Live GEE hotspot fetch requested | bbox={bbox} | "
+            f"window={start_date_str}..{end_date_str} | days={days}"
+        )
+        self.last_fetch_debug = {
+            "requested_source": "gee_live",
+            "fallback_used": False,
+            "bbox": bbox,
+            "days": int(days),
+            "window_start": start_date_str,
+            "window_end": end_date_str,
+            "requested_at_utc": run_utc.isoformat() + "Z",
+        }
         
         region = ee.Geometry.BBox(*bbox)
         
@@ -138,6 +160,14 @@ class Sentinel5PClient:
                       .filterDate(startDate, endDate)
                       .filterBounds(region)
                       .select('CH4_column_volume_mixing_ratio_dry_air'))
+
+        try:
+            img_count = self._gee_getinfo_with_retry(collection.size())
+            print(f"[S5P] GEE collection image count in window: {img_count}")
+            self.last_fetch_debug["gee_image_count"] = int(img_count)
+        except Exception as exc:
+            print(f"[S5P] Could not read GEE collection size: {exc}")
+            self.last_fetch_debug["gee_image_count_error"] = str(exc)
         
         # Calculate mean CH4 over the period
         mean_img = collection.mean().clip(region)
@@ -155,13 +185,18 @@ class Sentinel5PClient:
         except Exception as exc:
             print(f"[WARNING] GEE reduceRegion failed after all retries: {exc}")
             print("[WARNING] Falling back to bundled local CSV dataset.")
-            return self.load_hotspots_csv()
+            self.last_fetch_debug["fallback_used"] = True
+            self.last_fetch_debug["fallback_reason"] = f"reduceRegion failed: {exc}"
+            return self.load_hotspots_csv(reason=self.last_fetch_debug["fallback_reason"])
         
         ch4_mean = stats.get('CH4_column_volume_mixing_ratio_dry_air_mean')
         ch4_std = stats.get('CH4_column_volume_mixing_ratio_dry_air_stdDev')
+        print(f"[S5P] GEE CH4 baseline stats | mean={ch4_mean} | std={ch4_std}")
         
         if ch4_mean is None or ch4_std is None:
             print("[WARNING] Could not compute stats from GEE, falling back to empty DataFrame.")
+            self.last_fetch_debug["fallback_used"] = True
+            self.last_fetch_debug["fallback_reason"] = "GEE stats missing mean/std"
             return pd.DataFrame(columns=['longitude', 'latitude', 'count', 'severity'])
             
         # Use the configured threshold (minus a small margin so HotspotDetector has a distribution to evaluate)
@@ -185,9 +220,12 @@ class Sentinel5PClient:
         except Exception as exc:
             print(f"[WARNING] GEE sample failed after all retries: {exc}")
             print("[WARNING] Falling back to bundled local CSV dataset.")
-            return self.load_hotspots_csv()
+            self.last_fetch_debug["fallback_used"] = True
+            self.last_fetch_debug["fallback_reason"] = f"sample failed: {exc}"
+            return self.load_hotspots_csv(reason=self.last_fetch_debug["fallback_reason"])
         
         features = points.get('features', [])
+        print(f"[S5P] GEE anomaly sample returned {len(features)} features")
         
         data = []
         for f in features:
@@ -218,7 +256,26 @@ class Sentinel5PClient:
             
         df = pd.DataFrame(data)
         if df.empty:
+            self.last_fetch_debug.update(
+                {
+                    "resolved_source": "gee_live",
+                    "hotspot_rows": 0,
+                    "note": "GEE query succeeded but produced zero anomaly features",
+                }
+            )
             return pd.DataFrame(columns=['longitude', 'latitude', 'count', 'severity'])
+
+        self.last_fetch_debug.update(
+            {
+                "resolved_source": "gee_live",
+                "hotspot_rows": int(len(df)),
+                "count_range": (int(df['count'].min()), int(df['count'].max())),
+            }
+        )
+        print(
+            "[S5P] Final hotspot dataset source=gee_live "
+            f"rows={len(df)} count_range=({int(df['count'].min())}, {int(df['count'].max())})"
+        )
         return df
         
     def get_summary_stats_from_df(self, df: pd.DataFrame) -> dict:
@@ -250,9 +307,12 @@ class Sentinel5PClient:
     # Local dataset loading
     # ------------------------------------------------------------------
 
-    def load_hotspots_csv(self) -> pd.DataFrame:
+    def load_hotspots_csv(self, reason: Optional[str] = None) -> pd.DataFrame:
         """Load India_Methane_Hotspots.csv, parse geometry, add severity."""
         csv_path = self.dataset_dir / "India_Methane_Hotspots.csv"
+        print(f"[S5P] Loading bundled CSV hotspots from {csv_path}")
+        if reason:
+            print(f"[S5P] CSV fallback reason: {reason}")
         df = pd.read_csv(csv_path)
 
         # Parse .geo JSON → lon/lat
@@ -283,6 +343,20 @@ class Sentinel5PClient:
                 return "Low"
 
         df["severity"] = df["count"].apply(classify)
+        self.last_fetch_debug.update(
+            {
+                "resolved_source": "bundled_csv",
+                "fallback_used": bool(reason),
+                "fallback_reason": reason,
+                "csv_path": str(csv_path),
+                "hotspot_rows": int(len(df)),
+                "count_range": (int(df['count'].min()), int(df['count'].max())),
+            }
+        )
+        print(
+            "[S5P] Final hotspot dataset source=bundled_csv "
+            f"rows={len(df)} count_range=({int(df['count'].min())}, {int(df['count'].max())})"
+        )
         return df
 
     def load_ch4_raster(self, filename: str = "India_Methane_Map.tif") -> CH4Grid:

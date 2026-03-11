@@ -25,7 +25,7 @@ const HeatmapLayer = ({
   // Default options – red-orange heat theme:
   // low intensity → light peach/orange → deep red at peak
   const defaultOptions = {
-    radius: 30,
+    radius: 12,
     blur: 20,
     maxZoom: 10,
     max: 1.0,

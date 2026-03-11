@@ -621,11 +621,11 @@ const LiveMap = () => {
           <HeatmapLayer
             points={heatmapPoints}
             options={{
-              radius: 28,
-              blur: 18,
-              maxZoom: 10,
+              radius: 12,
+              blur: 8,
+              maxZoom: 12,
               max: 1.0,
-              minOpacity: 0.35,
+              minOpacity: 0.22,
               gradient: {
                 0.0: '#fff3e0',
                 0.15: '#ffcc80',

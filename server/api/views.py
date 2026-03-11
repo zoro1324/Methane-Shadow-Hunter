@@ -484,6 +484,41 @@ def _run_pipeline_background(run_pk, mode, use_llm):
             hotspots_df = s5p.fetch_hotspots_gee(bbox=config.aoi_bbox, days=30)
             stats = s5p.get_summary_stats_from_df(hotspots_df)
 
+        # Explicit provenance debug to verify live-vs-fallback behavior at runtime.
+        debug_meta = getattr(s5p, "last_fetch_debug", {}) or {}
+        if debug_meta:
+            print(_inf(
+                f"[DEBUG] Step1 source resolution: requested={debug_meta.get('requested_source', 'n/a')} "
+                f"resolved={debug_meta.get('resolved_source', 'n/a')} "
+                f"fallback={debug_meta.get('fallback_used', False)}"
+            ))
+            if debug_meta.get("window_start") and debug_meta.get("window_end"):
+                print(_inf(
+                    f"[DEBUG] GEE date window: {debug_meta.get('window_start')} → {debug_meta.get('window_end')}"
+                ))
+            if debug_meta.get("gee_image_count") is not None:
+                print(_inf(f"[DEBUG] GEE image count: {debug_meta.get('gee_image_count')}"))
+            if debug_meta.get("fallback_reason"):
+                print(_warn(f"[DEBUG] Fallback reason: {debug_meta.get('fallback_reason')}"))
+            if debug_meta.get("csv_path"):
+                print(_inf(f"[DEBUG] CSV path used: {debug_meta.get('csv_path')}"))
+            if debug_meta.get("requested_at_utc"):
+                print(_inf(f"[DEBUG] Fetch timestamp UTC: {debug_meta.get('requested_at_utc')}"))
+        else:
+            print(_warn("[DEBUG] Sentinel5PClient did not provide fetch provenance metadata"))
+
+        if not hotspots_df.empty and {'latitude', 'longitude', 'count'}.issubset(hotspots_df.columns):
+            lat_min = float(hotspots_df['latitude'].min())
+            lat_max = float(hotspots_df['latitude'].max())
+            lon_min = float(hotspots_df['longitude'].min())
+            lon_max = float(hotspots_df['longitude'].max())
+            cnt_min = int(hotspots_df['count'].min())
+            cnt_max = int(hotspots_df['count'].max())
+            print(_inf(
+                f"[DEBUG] Loaded dataframe bounds: lat={lat_min:.4f}..{lat_max:.4f} "
+                f"lon={lon_min:.4f}..{lon_max:.4f} count={cnt_min}..{cnt_max}"
+            ))
+
         run.total_hotspots = stats['total_hotspots']
         run.save(update_fields=['total_hotspots'])
         _store_raw_hotspots(hotspots_df)
