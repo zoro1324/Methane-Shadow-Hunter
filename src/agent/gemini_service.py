@@ -299,19 +299,27 @@ def _extract_sources_from_message(ai_message) -> list[dict]:
 
 
 def _duckduckgo_search(query: str, max_results: int = 5) -> list[dict[str, str]]:
-    """Fetch lightweight web results via duckduckgo-search."""
+    """Fetch lightweight web results via DDGS (preferred) or legacy fallback."""
+    ddgs_cls = None
     try:
-        from duckduckgo_search import DDGS  # noqa: PLC0415
+        from ddgs import DDGS as _DDGS  # noqa: PLC0415
+
+        ddgs_cls = _DDGS
     except ImportError:
-        print(
-            "[Ollama Search] duckduckgo-search not installed. "
-            "Run: pip install duckduckgo-search"
-        )
-        return []
+        try:
+            from duckduckgo_search import DDGS as _DDGS  # noqa: PLC0415
+
+            ddgs_cls = _DDGS
+        except ImportError:
+            print(
+                "[Ollama Search] ddgs not installed. "
+                "Run: pip install ddgs"
+            )
+            return []
 
     results: list[dict[str, str]] = []
     try:
-        with DDGS() as ddgs:
+        with ddgs_cls() as ddgs:
             for item in ddgs.text(query, max_results=max_results):
                 results.append(
                     {
@@ -321,6 +329,6 @@ def _duckduckgo_search(query: str, max_results: int = 5) -> list[dict[str, str]]
                     }
                 )
     except Exception as exc:
-        print(f"[Ollama Search] DuckDuckGo query failed: {exc}")
+        print(f"[Ollama Search] DDGS query failed: {exc}")
 
     return results

@@ -83,13 +83,18 @@ class ComplianceAuditAgent:
         """Connect to local Ollama via LangChain ChatOllama."""
         try:
             from langchain_ollama import ChatOllama  # noqa: PLC0415
-            self._llm = ChatOllama(
+
+            # Invoke through Any to avoid strict signature drift across
+            # langchain-ollama versions while keeping runtime kwargs intact.
+            chat_ollama_cls: Any = ChatOllama
+            llm = chat_ollama_cls(
                 model=self.model,
                 base_url=self.base_url,
                 temperature=0.3,
             )
             # Quick connectivity test
-            self._llm.invoke("test")
+            llm.invoke("test")
+            self._llm = llm
             print(f"[Agent] Connected to Ollama ({self.model} @ {self.base_url})")
             return True
         except Exception as e:
