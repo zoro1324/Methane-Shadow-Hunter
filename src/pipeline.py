@@ -50,7 +50,7 @@ _STEP_TITLES = {
     4: ("🛰️ ", "High-Res Plume Imaging",   "CarbonMapper STAC API — precise plume geometry & emission estimates"),
     5: ("🏭", "Infrastructure Attribution","Haversine spatial join → Who is responsible for each leak?"),
     6: ("⚛️ ", "Plume Inversion (PyTorch)","Gaussian dispersion inversion with live Open-Meteo wind data"),
-    7: ("📋", "Autonomous Audit Reports",  "LangChain + Ollama compliance officer generates regulatory filings"),
+    7: ("📋", "Autonomous Audit Reports",  "Ollama (local) + Gemini Search (cloud) → regulatory filings with owner intelligence"),
 }
 
 def _step_banner(n: int) -> float:
@@ -110,6 +110,10 @@ class MethaneHunterPipeline:
         self.agent = ComplianceAuditAgent(
             model=config.ollama_model,
             base_url=config.ollama_base_url,
+            gemini_api_key=config.gemini_api_key,
+            gemini_model=config.gemini_model,
+            gemini_search_threshold_kg_hr=config.gemini_search_threshold_kg_hr,
+            llm_provider=config.llm_provider,
         )
 
         # Results storage
@@ -131,9 +135,20 @@ class MethaneHunterPipeline:
         print(_col("█" * width, C.CYAN))
         print()
         mode_str  = _col("OFFLINE (bundled dataset)", C.YELLOW) if self.use_demo else _col("LIVE (GEE + APIs)", C.GREEN)
-        llm_str   = _col(f"Ollama / {config.ollama_model}", C.GREEN) if self.use_llm else _col("Disabled", C.YELLOW)
+        if config.llm_provider == "gemini" and config.gemini_api_key:
+            llm_str = _col(f"Gemini / {config.gemini_model} (cloud)", C.GREEN)
+        elif self.use_llm:
+            llm_str = _col(f"Ollama / {config.ollama_model} (local)", C.GREEN)
+        else:
+            llm_str = _col("Disabled", C.YELLOW)
+        gemini_str = (
+            _col(f"Gemini / {config.gemini_model} + Google Search", C.GREEN)
+            if config.gemini_api_key
+            else _col("Not configured (set GEMINI_API_KEY)", C.YELLOW)
+        )
         print(f"  {C.BOLD}Mode   :{C.RESET} {mode_str}")
         print(f"  {C.BOLD}LLM    :{C.RESET} {llm_str}")
+        print(f"  {C.BOLD}Search :{C.RESET} {gemini_str}")
         print(f"  {C.BOLD}AOI    :{C.RESET} India  "
               f"Lon {config.aoi_min_lon}°–{config.aoi_max_lon}°  "
               f"Lat {config.aoi_min_lat}°–{config.aoi_max_lat}°")
