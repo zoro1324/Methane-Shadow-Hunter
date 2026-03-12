@@ -35,10 +35,12 @@ class Config:
     ollama_model: str = "llama3:8b"
     ollama_base_url: str = "http://localhost:11434"
 
-    # --- LLM (Gemini - cloud, with Google Search tools) ---
+    # --- Search enrichment config ---
+    # Gemini keys/model are used when LLM_PROVIDER=gemini.
+    # When LLM_PROVIDER=ollama, search enrichment uses DuckDuckGo + Ollama.
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.0-flash"
-    # Minimum emission rate (kg/hr) that triggers Gemini web-search enrichment
+    # Minimum emission rate (kg/hr) that triggers web-search enrichment
     gemini_search_threshold_kg_hr: float = 25.0
 
     # --- AOI (India default) ---

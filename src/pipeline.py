@@ -50,7 +50,7 @@ _STEP_TITLES = {
     4: ("🛰️ ", "High-Res Plume Imaging",   "CarbonMapper STAC API — precise plume geometry & emission estimates"),
     5: ("🏭", "Infrastructure Attribution","Haversine spatial join → Who is responsible for each leak?"),
     6: ("⚛️ ", "Plume Inversion (PyTorch)","Gaussian dispersion inversion with live Open-Meteo wind data"),
-    7: ("📋", "Autonomous Audit Reports",  "Ollama (local) + Gemini Search (cloud) → regulatory filings with owner intelligence"),
+    7: ("📋", "Autonomous Audit Reports",  "LLM drafting + provider-aware web search enrichment for owner intelligence"),
 }
 
 def _step_banner(n: int) -> float:
@@ -141,14 +141,19 @@ class MethaneHunterPipeline:
             llm_str = _col(f"Ollama / {config.ollama_model} (local)", C.GREEN)
         else:
             llm_str = _col("Disabled", C.YELLOW)
-        gemini_str = (
-            _col(f"Gemini / {config.gemini_model} + Google Search", C.GREEN)
-            if config.gemini_api_key
-            else _col("Not configured (set GEMINI_API_KEY)", C.YELLOW)
-        )
+        if config.llm_provider == "ollama":
+            search_str = _col(
+                f"Ollama / {config.ollama_model} + DuckDuckGo", C.GREEN
+            )
+        elif config.gemini_api_key:
+            search_str = _col(
+                f"Gemini / {config.gemini_model} + Google Search", C.GREEN
+            )
+        else:
+            search_str = _col("Not configured (set GEMINI_API_KEY)", C.YELLOW)
         print(f"  {C.BOLD}Mode   :{C.RESET} {mode_str}")
         print(f"  {C.BOLD}LLM    :{C.RESET} {llm_str}")
-        print(f"  {C.BOLD}Search :{C.RESET} {gemini_str}")
+        print(f"  {C.BOLD}Search :{C.RESET} {search_str}")
         print(f"  {C.BOLD}AOI    :{C.RESET} India  "
               f"Lon {config.aoi_min_lon}°–{config.aoi_max_lon}°  "
               f"Lat {config.aoi_min_lat}°–{config.aoi_max_lat}°")
