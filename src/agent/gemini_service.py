@@ -1,15 +1,12 @@
 """
-Gemini LLM Service with Google Search Tools  (LangChain implementation).
+Web-search enrichment service for facility intelligence.
 
-Uses Google Gemini 2.0 Flash via **langchain-google-genai** with Gemini's
-native Google Search grounding bound as a tool.  The grounding is activated
-only for the two facility-intelligence searches triggered during report
-generation for confirmed suspicious methane emitters.
+Supports two search backends:
+    - Gemini + Google Search grounding (cloud)
+    - Ollama + DuckDuckGo search results (local LLM + web retrieval)
 
-This service is separate from the primary report-drafting LLM:
-  - Primary LLM (Ollama or Gemini, no search)  → drafts the audit text
-  - GeminiSearchService (Gemini + Google Search) → looks up facility owner
-    and compliance history using live web results
+The service is separate from the primary report-drafting LLM. It is used only
+for facility owner and compliance-history enrichment sections.
 """
 
 from typing import Any, Optional
@@ -17,27 +14,47 @@ from typing import Any, Optional
 
 class GeminiSearchService:
     """
-    LangChain-based Gemini search service for facility intelligence.
+    Web-search enrichment service for facility intelligence.
 
-    Uses ``ChatGoogleGenerativeAI`` from ``langchain-google-genai`` with
-    Gemini's built-in ``google_search_retrieval`` tool bound via
-    ``bind_tools()``.  Activated when emission_rate >= threshold.
+    ``provider='gemini'``:
+      Uses ``ChatGoogleGenerativeAI`` with Gemini's
+      ``google_search_retrieval`` tool.
+
+    ``provider='ollama'``:
+      Uses ``duckduckgo-search`` for retrieval and ``ChatOllama`` for
+      synthesis.
     """
 
-    def __init__(self, api_key: str, model: str = "gemini-2.0-flash"):
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "gemini-2.0-flash",
+        provider: str = "gemini",
+        ollama_model: str = "llama3:8b",
+        ollama_base_url: str = "http://localhost:11434",
+    ):
         self.api_key = api_key
         self.model = model
-        # ChatGoogleGenerativeAI instance with search grounding bound
+        self.provider = (provider or "gemini").lower()
+        self.ollama_model = ollama_model
+        self.ollama_base_url = ollama_base_url
         self._llm: Optional[Any] = None
+        self._search_provider_label = "Gemini + Google Search"
 
     # ------------------------------------------------------------------
     # Initialisation
     # ------------------------------------------------------------------
 
     def _init_llm(self) -> bool:
-        """Lazily initialise the LangChain Gemini client with search grounding."""
+        """Lazily initialise the selected search backend."""
         if self._llm is not None:
             return True
+        if self.provider == "ollama":
+            return self._init_ollama_llm()
+        return self._init_gemini_llm()
+
+    def _init_gemini_llm(self) -> bool:
+        """Initialise Gemini with native Google Search grounding."""
         if not self.api_key:
             print("[Gemini] No API key set – skipping web-search enrichment.")
             return False
@@ -52,6 +69,7 @@ class GeminiSearchService:
             # Bind Gemini's native Google Search grounding tool.
             # This tells the model it can retrieve live web results.
             self._llm = base_llm.bind_tools([{"google_search_retrieval": {}}])
+            self._search_provider_label = "Gemini + Google Search"
             print(
                 f"[Gemini] LangChain ChatGoogleGenerativeAI ({self.model}) "
                 "with Google Search grounding ready."
@@ -65,6 +83,25 @@ class GeminiSearchService:
             return False
         except Exception as exc:
             print(f"[Gemini] Initialisation failed: {exc}")
+            return False
+
+    def _init_ollama_llm(self) -> bool:
+        """Initialise local Ollama for synthesis of retrieved web results."""
+        try:
+            from langchain_ollama import ChatOllama  # noqa: PLC0415
+
+            self._llm = ChatOllama(
+                model=self.ollama_model,
+                base_url=self.ollama_base_url,
+                temperature=0.1,
+            )
+            self._search_provider_label = "Ollama + DuckDuckGo"
+            print(
+                f"[Ollama Search] Connected ({self.ollama_model} @ {self.ollama_base_url})"
+            )
+            return True
+        except Exception as exc:
+            print(f"[Ollama Search] Initialisation failed: {exc}")
             return False
 
     # ------------------------------------------------------------------
@@ -146,11 +183,18 @@ class GeminiSearchService:
 
     def _run_search(self, query: str, context: str = "") -> Optional[str]:
         """
-        Invoke the LangChain Gemini model (with Google Search grounding bound)
-        and return the text response, annotated with web sources when available.
+        Run a search query using the selected provider and return formatted text
+        with source links when available.
         """
         if self._llm is None:
             return None
+        if self.provider == "ollama":
+            return self._run_ollama_search(query=query, context=context)
+
+        return self._run_gemini_search(query=query, context=context)
+
+    def _run_gemini_search(self, query: str, context: str = "") -> Optional[str]:
+        """Run grounded Gemini search and append extracted web sources."""
         try:
             from langchain_core.messages import HumanMessage  # noqa: PLC0415
 
@@ -173,6 +217,53 @@ class GeminiSearchService:
         except Exception as exc:
             print(f"[Gemini] Search failed ({context}): {exc}")
             return None
+
+    def _run_ollama_search(self, query: str, context: str = "") -> Optional[str]:
+        """Retrieve web snippets via DuckDuckGo and synthesize with Ollama."""
+        try:
+            web_results = _duckduckgo_search(query=query, max_results=5)
+            if not web_results:
+                print(f"[Ollama Search] No web results for: {context}")
+                return None
+
+            evidence_block = "\n\n".join(
+                (
+                    f"[{idx}] {item['title']}\n"
+                    f"URL: {item['url']}\n"
+                    f"Snippet: {item['snippet']}"
+                )
+                for idx, item in enumerate(web_results, start=1)
+            )
+
+            prompt = (
+                "You are preparing a compliance-intelligence brief for methane emissions. "
+                "Use only the web evidence below.\n\n"
+                f"Original request:\n{query}\n\n"
+                "Instructions:\n"
+                "1. Provide a structured answer with specific fields and values.\n"
+                "2. If data is unavailable, write 'Not Found'.\n"
+                "3. Do not invent facts outside the provided evidence.\n"
+                "4. Keep it concise and audit-ready.\n\n"
+                f"Web evidence:\n{evidence_block}"
+            )
+            response = self._llm.invoke(prompt)
+            result_text = (
+                response.content
+                if hasattr(response, "content") and response.content
+                else "(No response)"
+            )
+            result_text += "\n\n**Web Sources Used:**\n" + "\n".join(
+                f"- [{item['title']}]({item['url']})" for item in web_results
+            )
+            return result_text
+        except Exception as exc:
+            print(f"[Ollama Search] Search failed ({context}): {exc}")
+            return None
+
+    @property
+    def search_provider_label(self) -> str:
+        """Human-readable label for the currently active search backend."""
+        return self._search_provider_label
 
 
 # ------------------------------------------------------------------
@@ -205,3 +296,31 @@ def _extract_sources_from_message(ai_message) -> list[dict]:
     except Exception:
         pass
     return sources
+
+
+def _duckduckgo_search(query: str, max_results: int = 5) -> list[dict[str, str]]:
+    """Fetch lightweight web results via duckduckgo-search."""
+    try:
+        from duckduckgo_search import DDGS  # noqa: PLC0415
+    except ImportError:
+        print(
+            "[Ollama Search] duckduckgo-search not installed. "
+            "Run: pip install duckduckgo-search"
+        )
+        return []
+
+    results: list[dict[str, str]] = []
+    try:
+        with DDGS() as ddgs:
+            for item in ddgs.text(query, max_results=max_results):
+                results.append(
+                    {
+                        "title": str(item.get("title") or "Source"),
+                        "url": str(item.get("href") or "#"),
+                        "snippet": str(item.get("body") or ""),
+                    }
+                )
+    except Exception as exc:
+        print(f"[Ollama Search] DuckDuckGo query failed: {exc}")
+
+    return results

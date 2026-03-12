@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Any, Optional
 from dataclasses import dataclass
 
-from src.agent.prompts import SYSTEM_PROMPT, REPORT_TEMPLATE, GEMINI_INTEL_TEMPLATE
+from src.agent.prompts import SYSTEM_PROMPT, REPORT_TEMPLATE, SEARCH_INTEL_TEMPLATE
 from src.agent.tools import facility_lookup, get_emission_data, search_regulations
 from src.agent.gemini_service import GeminiSearchService
 
@@ -61,10 +61,13 @@ class ComplianceAuditAgent:
         self.base_url = base_url
         self.llm_provider = llm_provider  # "ollama" | "gemini"
         self._llm: Optional[Any] = None
-        # Gemini search enrichment service (always Gemini, regardless of llm_provider)
+        # Web-search enrichment service for owner/compliance intelligence.
         self._gemini = GeminiSearchService(
             api_key=gemini_api_key,
             model=gemini_model,
+            provider=llm_provider,
+            ollama_model=model,
+            ollama_base_url=base_url,
         )
         self.gemini_search_threshold_kg_hr = gemini_search_threshold_kg_hr
 
@@ -153,16 +156,16 @@ class ComplianceAuditAgent:
 
         reg_info = search_regulations(country="India", sector="oil_gas")
 
-        # --- Gemini web-search enrichment (confirmed suspicious facility) ---
-        gemini_owner_details = None
-        gemini_compliance_history = None
+        # --- Web-search enrichment (confirmed suspicious facility) ---
+        search_owner_details = None
+        search_compliance_history = None
         rate_for_threshold = attributed_emission.emission_rate_kg_hr
         if rate_for_threshold >= self.gemini_search_threshold_kg_hr:
             print(
-                f"[Gemini] Emission {rate_for_threshold:.1f} kg/hr ≥ threshold "
+                f"[Search] Emission {rate_for_threshold:.1f} kg/hr ≥ threshold "
                 f"{self.gemini_search_threshold_kg_hr} kg/hr – searching for facility owner..."
             )
-            gemini_owner_details = self._gemini.search_facility_owner(
+            search_owner_details = self._gemini.search_facility_owner(
                 facility_name=attributed_emission.facility_name,
                 operator=attributed_emission.operator,
                 state=attributed_emission.state,
@@ -170,7 +173,7 @@ class ComplianceAuditAgent:
                 lon=attributed_emission.facility_lon,
                 facility_type=attributed_emission.facility_type,
             )
-            gemini_compliance_history = self._gemini.search_industry_compliance(
+            search_compliance_history = self._gemini.search_industry_compliance(
                 operator=attributed_emission.operator,
                 state=attributed_emission.state,
             )
@@ -213,8 +216,8 @@ class ComplianceAuditAgent:
             reg_info=reg_info,
             llm_analysis=llm_analysis,
             plume_data=plume_data,
-            gemini_owner_details=gemini_owner_details,
-            gemini_compliance_history=gemini_compliance_history,
+            search_owner_details=search_owner_details,
+            search_compliance_history=search_compliance_history,
         )
 
         return AuditReport(
@@ -265,7 +268,7 @@ Provide your analysis in a structured format."""
         self,
         report_id, timestamp, attributed, emission_class, risk_level,
         annual_tonnes, co2e_tonnes, reg_info, llm_analysis, plume_data,
-        gemini_owner_details=None, gemini_compliance_history=None,
+        search_owner_details=None, search_compliance_history=None,
     ) -> str:
         """Build the final Markdown report."""
 
@@ -340,12 +343,12 @@ Provide your analysis in a structured format."""
             detection_source = f"Sentinel-5P + {plume_data.source}"
             acquisition_date = plume_data.acquisition_date
 
-        # --- Build Gemini Intel section ---
-        if gemini_owner_details or gemini_compliance_history:
-            gemini_intel_section = GEMINI_INTEL_TEMPLATE.format(
-                gemini_model=self._gemini.model,
-                owner_details=gemini_owner_details or "*Search did not return results.*",
-                compliance_history=gemini_compliance_history or "*Search did not return results.*",
+        # --- Build search intel section ---
+        if search_owner_details or search_compliance_history:
+            gemini_intel_section = SEARCH_INTEL_TEMPLATE.format(
+                search_provider=self._gemini.search_provider_label,
+                owner_details=search_owner_details or "*Search did not return results.*",
+                compliance_history=search_compliance_history or "*Search did not return results.*",
             )
         else:
             gemini_intel_section = ""
