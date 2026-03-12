@@ -7,11 +7,12 @@ compliance audit reports for identified methane-emitting facilities.
 
 import json
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 from dataclasses import dataclass
 
-from src.agent.prompts import SYSTEM_PROMPT, REPORT_TEMPLATE
+from src.agent.prompts import SYSTEM_PROMPT, REPORT_TEMPLATE, GEMINI_INTEL_TEMPLATE
 from src.agent.tools import facility_lookup, get_emission_data, search_regulations
+from src.agent.gemini_service import GeminiSearchService
 
 
 @dataclass
@@ -32,8 +33,18 @@ class ComplianceAuditAgent:
     """
     LLM-based agent that generates compliance audit reports.
 
-    Uses LangChain with Ollama (local) for analysis and report generation.
-    Falls back to template-based reports if Ollama is unavailable.
+    Uses two LLM backends:
+      - Ollama (local)  → analysing emission data and drafting report text
+      - Gemini (cloud)  → live Google Search for facility owner / compliance intel
+                          (activated when emission_rate >= gemini_search_threshold_kg_hr)
+
+    The primary report-drafting LLM is selected via ``llm_provider``:
+      - ``"ollama"`` (default) → uses ChatOllama (local, private)
+      - ``"gemini"``           → uses ChatGoogleGenerativeAI (cloud, no search tools
+                                 bound – search is handled separately by GeminiSearchService)
+
+    Falls back to template-based reports if the chosen LLM is unavailable.
+    Gemini search enrichment is silently skipped if no API key is provided.
     """
 
     def __init__(
@@ -41,18 +52,34 @@ class ComplianceAuditAgent:
         model: str = "llama3:8b",
         base_url: str = "http://localhost:11434",
         api_key: str = "",  # unused, kept for signature compatibility
+        gemini_api_key: str = "",
+        gemini_model: str = "gemini-2.0-flash",
+        gemini_search_threshold_kg_hr: float = 25.0,
+        llm_provider: str = "ollama",
     ):
         self.model = model
         self.base_url = base_url
-        self._llm = None
+        self.llm_provider = llm_provider  # "ollama" | "gemini"
+        self._llm: Optional[Any] = None
+        # Gemini search enrichment service (always Gemini, regardless of llm_provider)
+        self._gemini = GeminiSearchService(
+            api_key=gemini_api_key,
+            model=gemini_model,
+        )
+        self.gemini_search_threshold_kg_hr = gemini_search_threshold_kg_hr
 
-    def _init_llm(self):
-        """Initialize the Ollama LLM via LangChain."""
+    def _init_llm(self) -> bool:
+        """Initialise the chosen LLM backend (Ollama or Gemini) via LangChain."""
         if self._llm is not None:
             return True
+        if self.llm_provider == "gemini":
+            return self._init_gemini_llm()
+        return self._init_ollama_llm()
 
+    def _init_ollama_llm(self) -> bool:
+        """Connect to local Ollama via LangChain ChatOllama."""
         try:
-            from langchain_ollama import ChatOllama
+            from langchain_ollama import ChatOllama  # noqa: PLC0415
             self._llm = ChatOllama(
                 model=self.model,
                 base_url=self.base_url,
@@ -64,6 +91,34 @@ class ComplianceAuditAgent:
             return True
         except Exception as e:
             print(f"[Agent] Ollama not available: {e}")
+            print("[Agent] Will use template-based reports instead.")
+            self._llm = None
+            return False
+
+    def _init_gemini_llm(self) -> bool:
+        """Connect to Gemini via LangChain ChatGoogleGenerativeAI (no search tools bound)."""
+        if not self._gemini.api_key:
+            print("[Agent] LLM_PROVIDER=gemini but GEMINI_API_KEY is not set.")
+            print("[Agent] Will use template-based reports instead.")
+            return False
+        try:
+            from langchain_google_genai import ChatGoogleGenerativeAI  # noqa: PLC0415
+            # NOTE: No search tools bound here – this instance is for report
+            # analysis only.  Search grounding is handled by GeminiSearchService.
+            self._llm = ChatGoogleGenerativeAI(
+                model=self._gemini.model,
+                google_api_key=self._gemini.api_key,
+                temperature=0.3,
+            )
+            print(f"[Agent] Connected to Gemini ({self._gemini.model}) as primary LLM.")
+            return True
+        except ImportError:
+            print("[Agent] langchain-google-genai not installed.")
+            print("[Agent] Will use template-based reports instead.")
+            self._llm = None
+            return False
+        except Exception as e:
+            print(f"[Agent] Gemini LLM init failed: {e}")
             print("[Agent] Will use template-based reports instead.")
             self._llm = None
             return False
@@ -98,6 +153,28 @@ class ComplianceAuditAgent:
 
         reg_info = search_regulations(country="India", sector="oil_gas")
 
+        # --- Gemini web-search enrichment (confirmed suspicious facility) ---
+        gemini_owner_details = None
+        gemini_compliance_history = None
+        rate_for_threshold = attributed_emission.emission_rate_kg_hr
+        if rate_for_threshold >= self.gemini_search_threshold_kg_hr:
+            print(
+                f"[Gemini] Emission {rate_for_threshold:.1f} kg/hr ≥ threshold "
+                f"{self.gemini_search_threshold_kg_hr} kg/hr – searching for facility owner..."
+            )
+            gemini_owner_details = self._gemini.search_facility_owner(
+                facility_name=attributed_emission.facility_name,
+                operator=attributed_emission.operator,
+                state=attributed_emission.state,
+                lat=attributed_emission.facility_lat,
+                lon=attributed_emission.facility_lon,
+                facility_type=attributed_emission.facility_type,
+            )
+            gemini_compliance_history = self._gemini.search_industry_compliance(
+                operator=attributed_emission.operator,
+                state=attributed_emission.state,
+            )
+
         # Classify risk
         rate = attributed_emission.emission_rate_kg_hr
         if rate > 500:
@@ -117,7 +194,7 @@ class ComplianceAuditAgent:
         annual_tonnes = round(rate * 8760 / 1000, 1)
         co2e_tonnes = round(annual_tonnes * 80, 0)
 
-        # Try LLM-based analysis
+        # Try LLM-based analysis (Ollama)
         llm_analysis = None
         if self._init_llm():
             llm_analysis = self._get_llm_analysis(
@@ -136,6 +213,8 @@ class ComplianceAuditAgent:
             reg_info=reg_info,
             llm_analysis=llm_analysis,
             plume_data=plume_data,
+            gemini_owner_details=gemini_owner_details,
+            gemini_compliance_history=gemini_compliance_history,
         )
 
         return AuditReport(
@@ -152,6 +231,8 @@ class ComplianceAuditAgent:
 
     def _get_llm_analysis(self, facility_info, emission_info, reg_info, attributed) -> Optional[str]:
         """Get LLM-powered analysis."""
+        if self._llm is None:
+            return None
         try:
             prompt = f"""{SYSTEM_PROMPT}
 
@@ -173,8 +254,9 @@ Based on the following satellite detection data, provide:
 Provide your analysis in a structured format."""
 
             response = self._llm.invoke(prompt)
-            # ChatOpenAI returns an AIMessage; extract text content
-            return response.content if hasattr(response, "content") else str(response)
+            # Both ChatOllama and ChatGoogleGenerativeAI return AIMessage
+            content = response.content if hasattr(response, "content") else str(response)
+            return str(content) if not isinstance(content, str) else content
         except Exception as e:
             print(f"[Agent] LLM analysis failed: {e}")
             return None
@@ -183,6 +265,7 @@ Provide your analysis in a structured format."""
         self,
         report_id, timestamp, attributed, emission_class, risk_level,
         annual_tonnes, co2e_tonnes, reg_info, llm_analysis, plume_data,
+        gemini_owner_details=None, gemini_compliance_history=None,
     ) -> str:
         """Build the final Markdown report."""
 
@@ -257,6 +340,16 @@ Provide your analysis in a structured format."""
             detection_source = f"Sentinel-5P + {plume_data.source}"
             acquisition_date = plume_data.acquisition_date
 
+        # --- Build Gemini Intel section ---
+        if gemini_owner_details or gemini_compliance_history:
+            gemini_intel_section = GEMINI_INTEL_TEMPLATE.format(
+                gemini_model=self._gemini.model,
+                owner_details=gemini_owner_details or "*Search did not return results.*",
+                compliance_history=gemini_compliance_history or "*Search did not return results.*",
+            )
+        else:
+            gemini_intel_section = ""
+
         report = REPORT_TEMPLATE.format(
             report_id=report_id,
             timestamp=timestamp,
@@ -285,16 +378,22 @@ Provide your analysis in a structured format."""
             risk_details=risk_details,
             recommendations=recommendations,
             monitoring_plan=monitoring,
+            gemini_intel_section=gemini_intel_section,
         )
 
         # Append full LLM analysis if available
+        provider_label = (
+            f"Gemini/{self._gemini.model}"
+            if self.llm_provider == "gemini"
+            else f"Ollama/{self.model}"
+        )
         if llm_analysis:
-            report += f"\n\n---\n## 🤖 Detailed LLM Analysis\n\n{llm_analysis}\n"
+            report += f"\n\n---\n## 🤖 Detailed LLM Analysis *({provider_label})*\n\n{llm_analysis}\n"
 
         return report
 
     def generate_batch_reports(
-        self, attributed_emissions: list, plume_data_map: dict = None
+        self, attributed_emissions: list, plume_data_map: Optional[dict] = None
     ) -> list[AuditReport]:
         """Generate reports for multiple emissions."""
         reports = []
