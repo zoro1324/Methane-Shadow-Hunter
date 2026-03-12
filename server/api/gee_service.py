@@ -9,6 +9,7 @@ Provides Sentinel-5P TROPOMI CH4 data as:
 import os
 import ee
 import logging
+import threading
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
