@@ -26,9 +26,20 @@ class Config:
     carbonmapper_token: str = ""
     carbonmapper_stac_url: str = "https://api.carbonmapper.org/api/v1/stac/"
 
+    # --- LLM Provider switch ---
+    # Set LLM_PROVIDER=gemini to use Gemini for report drafting.
+    # Ollama is always kept as the local fallback when provider="ollama".
+    llm_provider: str = "ollama"  # "ollama" | "gemini"
+
     # --- LLM (Ollama - local) ---
     ollama_model: str = "llama3:8b"
     ollama_base_url: str = "http://localhost:11434"
+
+    # --- LLM (Gemini - cloud, with Google Search tools) ---
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.0-flash"
+    # Minimum emission rate (kg/hr) that triggers Gemini web-search enrichment
+    gemini_search_threshold_kg_hr: float = 25.0
 
     # --- AOI (India default) ---
     aoi_min_lon: float = 68.0
@@ -53,8 +64,14 @@ class Config:
                 "CARBONMAPPER_STAC_URL",
                 "https://api.carbonmapper.org/api/v1/stac/",
             ),
+            llm_provider=os.getenv("LLM_PROVIDER", "ollama").lower(),
             ollama_model=os.getenv("OLLAMA_MODEL", "llama3:8b"),
             ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+            gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
+            gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
+            gemini_search_threshold_kg_hr=float(
+                os.getenv("GEMINI_SEARCH_THRESHOLD_KG_HR", "25.0")
+            ),
             aoi_min_lon=float(os.getenv("AOI_MIN_LON", "68.0")),
             aoi_max_lon=float(os.getenv("AOI_MAX_LON", "97.5")),
             aoi_min_lat=float(os.getenv("AOI_MIN_LAT", "6.5")),
